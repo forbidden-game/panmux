@@ -6635,7 +6635,7 @@ pub const Keybinds = struct {
 
             // Cmd/Alt+N for goto tab N
             const start: u21 = '1';
-            const end: u21 = '8';
+            const end: u21 = '9';
             comptime var i: u21 = start;
             inline while (i <= end) : (i += 1) {
                 // We register BOTH the physical `digit_N` key and the unicode
@@ -6680,18 +6680,6 @@ pub const Keybinds = struct {
                     },
                 );
             }
-            try self.set.putFlags(
-                alloc,
-                .{
-                    .key = .{ .unicode = '9' },
-                    .mods = mods,
-                },
-                .{ .last_tab = {} },
-                .{
-                    // See comment above with the numeric goto_tab
-                    .performable = !builtin.target.os.tag.isDarwin(),
-                },
-            );
         }
 
         // Toggle fullscreen

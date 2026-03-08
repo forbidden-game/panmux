@@ -15,6 +15,7 @@ const TitlebarStyle = configpkg.Config.GtkTitlebarStyle;
 const input = @import("../../../input.zig");
 const CoreSurface = @import("../../../Surface.zig");
 const ext = @import("../ext.zig");
+const gtk_key = @import("../key.zig");
 const gtk_version = @import("../gtk_version.zig");
 const adw_version = @import("../adw_version.zig");
 const gresource = @import("../build/gresource.zig");
@@ -258,6 +259,7 @@ pub const Window = extern struct {
 
         // Template bindings
         tab_overview: *adw.TabOverview,
+        sidebar: *gtk.ListView,
         tab_bar: *adw.TabBar,
         tab_view: *adw.TabView,
         toolbar: *adw.ToolbarView,
@@ -870,6 +872,11 @@ pub const Window = extern struct {
         return tab.getActiveSurface();
     }
 
+    fn focusActiveSurface(self: *Self) void {
+        const surface = self.getActiveSurface() orelse return;
+        surface.grabFocus();
+    }
+
     /// Returns the configuration for this window. The reference count
     /// is not increased.
     pub fn getConfig(self: *Self) ?*Config {
@@ -1221,6 +1228,48 @@ pub const Window = extern struct {
         };
     }
 
+    fn closureSidebarDirname(
+        _: *Self,
+        pwd_: ?[*:0]const u8,
+    ) callconv(.c) [*:0]const u8 {
+        const pwd = pwd_ orelse return glib.ext.dupeZ(u8, "");
+        const trimmed = std.mem.trimRight(u8, std.mem.span(pwd), "/");
+        if (trimmed.len == 0) return glib.ext.dupeZ(u8, "/");
+        if (std.mem.lastIndexOfScalar(u8, trimmed, '/')) |idx| {
+            return glib.ext.dupeZ(u8, trimmed[idx + 1 ..]);
+        }
+
+        return glib.ext.dupeZ(u8, trimmed);
+    }
+
+    fn sidebarHintTrigger(self: *Self, pos: c_uint) ?input.Binding.Trigger {
+        if (pos >= 9) return null;
+        const config = self.getConfig() orelse return null;
+        return config.get().keybind.set.getTrigger(.{ .goto_tab = @intCast(pos + 1) });
+    }
+
+    fn closureSidebarHint(
+        self: *Self,
+        pos: c_uint,
+    ) callconv(.c) [*:0]const u8 {
+        const trigger = self.sidebarHintTrigger(pos) orelse return glib.ext.dupeZ(u8, "");
+
+        var buf: [64]u8 = undefined;
+        var writer: std.Io.Writer = .fixed(&buf);
+        const success = gtk_key.labelFromTrigger(&writer, trigger) catch
+            return glib.ext.dupeZ(u8, "");
+        if (!success) return glib.ext.dupeZ(u8, "");
+
+        return glib.ext.dupeZ(u8, writer.buffered());
+    }
+
+    fn closureSidebarHintVisible(
+        self: *Self,
+        pos: c_uint,
+    ) callconv(.c) c_int {
+        return @intFromBool(self.sidebarHintTrigger(pos) != null);
+    }
+
     //---------------------------------------------------------------
     // Virtual methods
 
@@ -1480,6 +1529,7 @@ pub const Window = extern struct {
         // If the tab was previously marked as needing attention
         // (e.g. due to a bell character), we now unmark that
         page.setNeedsAttention(@intFromBool(false));
+        self.focusActiveSurface();
     }
 
     fn tabViewPageAttached(
@@ -1603,6 +1653,20 @@ pub const Window = extern struct {
         self: *Self,
     ) callconv(.c) void {
         self.private().context_menu_page = page;
+    }
+
+    fn sidebarActivate(
+        _: *gtk.ListView,
+        pos: c_uint,
+        self: *Self,
+    ) callconv(.c) void {
+        const priv = self.private();
+        const n_pages = priv.tab_view.getNPages();
+        if (pos >= @as(c_uint, @intCast(@max(n_pages, 0)))) return;
+
+        const page = priv.tab_view.getNthPage(@intCast(pos));
+        priv.tab_view.setSelectedPage(page);
+        self.focusActiveSurface();
     }
 
     fn surfaceClipboardWrite(
@@ -2086,6 +2150,7 @@ pub const Window = extern struct {
 
             // Bindings
             class.bindTemplateChildPrivate("tab_overview", .{});
+            class.bindTemplateChildPrivate("sidebar", .{});
             class.bindTemplateChildPrivate("tab_bar", .{});
             class.bindTemplateChildPrivate("tab_view", .{});
             class.bindTemplateChildPrivate("toolbar", .{});
@@ -2100,6 +2165,7 @@ pub const Window = extern struct {
             class.bindTemplateCallback("close_page", &tabViewClosePage);
             class.bindTemplateCallback("page_attached", &tabViewPageAttached);
             class.bindTemplateCallback("page_detached", &tabViewPageDetached);
+            class.bindTemplateCallback("sidebar_activate", &sidebarActivate);
             class.bindTemplateCallback("setup_tab_menu", &setupTabMenu);
             class.bindTemplateCallback("tab_create_window", &tabViewCreateWindow);
             class.bindTemplateCallback("notify_n_pages", &tabViewNPages);
@@ -2111,6 +2177,9 @@ pub const Window = extern struct {
             class.bindTemplateCallback("notify_menu_active", &propMenuActive);
             class.bindTemplateCallback("notify_quick_terminal", &propQuickTerminal);
             class.bindTemplateCallback("notify_scale_factor", &propScaleFactor);
+            class.bindTemplateCallback("sidebar_dirname", &closureSidebarDirname);
+            class.bindTemplateCallback("sidebar_hint", &closureSidebarHint);
+            class.bindTemplateCallback("sidebar_hint_visible", &closureSidebarHintVisible);
             class.bindTemplateCallback("titlebar_style_is_tabs", &closureTitlebarStyleIsTab);
             class.bindTemplateCallback("computed_subtitle", &closureSubtitle);
 

@@ -154,17 +154,174 @@ template $GhosttyWindow: Adw.ApplicationWindow {
           visible: bind template.debug;
         }
 
-        Adw.ToastOverlay toast_overlay {
-          Adw.TabView tab_view {
-            notify::n-pages => $notify_n_pages();
-            notify::selected-page => $notify_selected_page();
-            close-page => $close_page();
-            page-attached => $page_attached();
-            page-detached => $page_detached();
-            create-window => $tab_create_window();
-            setup-menu => $setup_tab_menu();
-            menu-model: tab_context_menu;
-            shortcuts: none;
+        Gtk.Box {
+          orientation: horizontal;
+
+          Gtk.ScrolledWindow {
+            can-focus: false;
+            hexpand: false;
+            hscrollbar-policy: never;
+            min-content-width: 220;
+            vexpand: true;
+            width-request: 220;
+
+            styles [
+              "panmux-sidebar-scroller",
+            ]
+
+            Gtk.ListView sidebar {
+              activate => $sidebar_activate();
+              can-focus: false;
+              enable-rubberband: false;
+              hexpand: false;
+              show-separators: false;
+              single-click-activate: true;
+              vexpand: true;
+
+              model: Gtk.NoSelection {
+                model: bind tab_view.pages;
+              };
+
+              styles [
+                "navigation-sidebar",
+                "panmux-sidebar",
+              ]
+
+              factory: Gtk.BuilderListItemFactory {
+                template Gtk.ListItem {
+                  child: Gtk.Box {
+                    margin-bottom: 3;
+                    margin-end: 8;
+                    margin-start: 8;
+                    margin-top: 3;
+
+                    Gtk.Overlay {
+                      child: Gtk.Box {
+                        orientation: horizontal;
+                        spacing: 10;
+                        margin-bottom: 10;
+                        margin-end: 12;
+                        margin-start: 12;
+                        margin-top: 10;
+
+                        styles [
+                          "panmux-sidebar-row",
+                        ]
+
+                        Gtk.Label {
+                          halign: start;
+                          valign: start;
+                          visible: bind $sidebar_hint_visible(template.position) as <bool>;
+                          wrap: false;
+
+                          styles [
+                            "caption",
+                            "dim-label",
+                            "panmux-sidebar-hint",
+                          ]
+
+                          label: bind $sidebar_hint(template.position) as <string>;
+                        }
+
+                        Gtk.Box {
+                          hexpand: true;
+                          orientation: vertical;
+                          spacing: 3;
+
+                          Gtk.Label {
+                            ellipsize: end;
+                            halign: start;
+                            single-line-mode: true;
+                            wrap: false;
+
+                            styles [
+                              "panmux-sidebar-title",
+                            ]
+
+                            label: bind template.item as <Adw.TabPage>.title;
+                          }
+
+                          Gtk.Label {
+                            ellipsize: end;
+                            halign: start;
+                            single-line-mode: true;
+                            wrap: false;
+
+                            styles [
+                              "caption",
+                              "dim-label",
+                              "panmux-sidebar-dir",
+                            ]
+
+                            label: bind $sidebar_dirname(template.item as <Adw.TabPage>.child as <$GhosttyTab>.active-surface as <$GhosttySurface>.pwd) as <string>;
+                          }
+                        }
+
+                        Gtk.Box {
+                          halign: end;
+                          hexpand: false;
+                          valign: center;
+                          visible: bind template.item as <Adw.TabPage>.needs-attention;
+
+                          styles [
+                            "panmux-sidebar-dot",
+                          ]
+                        }
+                      };
+
+                      [overlay]
+                      Gtk.Box {
+                        can-target: false;
+                        halign: fill;
+                        hexpand: true;
+                        valign: fill;
+                        vexpand: true;
+                        visible: bind template.item as <Adw.TabPage>.selected;
+
+                        styles [
+                          "panmux-sidebar-selected",
+                        ]
+                      }
+
+                      [overlay]
+                      Gtk.Box {
+                        can-target: false;
+                        halign: fill;
+                        hexpand: true;
+                        valign: fill;
+                        vexpand: true;
+                        visible: bind template.item as <Adw.TabPage>.needs-attention;
+
+                        styles [
+                          "panmux-sidebar-attention",
+                        ]
+                      }
+                    }
+                  };
+                }
+              };
+            }
+          }
+
+          Gtk.Separator {
+            orientation: vertical;
+          }
+
+          Adw.ToastOverlay toast_overlay {
+            hexpand: true;
+            vexpand: true;
+
+            Adw.TabView tab_view {
+              notify::n-pages => $notify_n_pages();
+              notify::selected-page => $notify_selected_page();
+              close-page => $close_page();
+              page-attached => $page_attached();
+              page-detached => $page_detached();
+              create-window => $tab_create_window();
+              setup-menu => $setup_tab_menu();
+              menu-model: tab_context_menu;
+              shortcuts: none;
+            }
           }
         }
       }

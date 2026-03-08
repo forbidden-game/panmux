@@ -181,3 +181,57 @@ label.resize-overlay {
   margin: 0;
   padding: 0;
 }
+
+
+/*
+ * Panmux sidebar prototype
+ */
+
+.panmux-sidebar-scroller {
+  background: transparent;
+}
+
+.panmux-sidebar {
+  padding: 10px 0;
+}
+
+.panmux-sidebar row {
+  padding: 0;
+}
+
+.panmux-sidebar-row {
+  border-radius: 10px;
+  min-height: 52px;
+}
+
+.panmux-sidebar-selected {
+  background-color: rgba(255, 255, 255, 0.09);
+  border-radius: 12px;
+}
+
+.panmux-sidebar-attention {
+  background-color: rgba(192, 28, 40, 0.2);
+  border-radius: 12px;
+  outline-color: rgba(192, 28, 40, 0.55);
+  outline-style: solid;
+  outline-width: 1px;
+}
+
+.panmux-sidebar-title {
+  font-weight: 600;
+}
+
+.panmux-sidebar-dir {
+  opacity: 0.82;
+}
+
+.panmux-sidebar-hint {
+  min-width: 42px;
+}
+
+.panmux-sidebar-dot {
+  background-color: rgb(224, 27, 36);
+  border-radius: 999px;
+  min-height: 8px;
+  min-width: 8px;
+}
