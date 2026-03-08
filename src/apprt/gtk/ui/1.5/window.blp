@@ -253,7 +253,7 @@ template $GhosttyWindow: Adw.ApplicationWindow {
                               "panmux-sidebar-dir",
                             ]
 
-                            label: bind $sidebar_dirname(template.item as <Adw.TabPage>.child as <$GhosttyTab>.active-surface as <$GhosttySurface>.pwd) as <string>;
+                            label: bind $sidebar_cwd(template.item as <Adw.TabPage>.child as <$GhosttyTab>.active-surface as <$GhosttySurface>.pwd) as <string>;
                           }
                         }
 

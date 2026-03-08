@@ -9,6 +9,7 @@ const gobject = @import("gobject");
 const gtk = @import("gtk");
 
 const i18n = @import("../../../os/main.zig").i18n;
+const homedir = @import("../../../os/homedir.zig");
 const apprt = @import("../../../apprt.zig");
 const configpkg = @import("../../../config.zig");
 const TitlebarStyle = configpkg.Config.GtkTitlebarStyle;
@@ -1228,18 +1229,29 @@ pub const Window = extern struct {
         };
     }
 
-    fn closureSidebarDirname(
+    fn closureSidebarCwd(
         _: *Self,
         pwd_: ?[*:0]const u8,
     ) callconv(.c) [*:0]const u8 {
         const pwd = pwd_ orelse return glib.ext.dupeZ(u8, "");
-        const trimmed = std.mem.trimRight(u8, std.mem.span(pwd), "/");
-        if (trimmed.len == 0) return glib.ext.dupeZ(u8, "/");
-        if (std.mem.lastIndexOfScalar(u8, trimmed, '/')) |idx| {
-            return glib.ext.dupeZ(u8, trimmed[idx + 1 ..]);
+        const path = std.mem.trimRight(u8, std.mem.span(pwd), "/");
+        if (path.len == 0) return glib.ext.dupeZ(u8, "/");
+
+        var home_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const home = homedir.home(&home_buf) catch null;
+        if (home) |home_path| {
+            if (std.mem.eql(u8, path, home_path)) {
+                return glib.ext.dupeZ(u8, "~");
+            }
+            if (std.mem.startsWith(u8, path, home_path) and path.len > home_path.len and path[home_path.len] == '/') {
+                var buf: [std.fs.max_path_bytes]u8 = undefined;
+                const shortened = std.fmt.bufPrintZ(&buf, "~{s}", .{path[home_path.len..]}) catch
+                    return glib.ext.dupeZ(u8, path);
+                return glib.ext.dupeZ(u8, shortened);
+            }
         }
 
-        return glib.ext.dupeZ(u8, trimmed);
+        return glib.ext.dupeZ(u8, path);
     }
 
     fn sidebarHintTrigger(self: *Self, pos: c_uint) ?input.Binding.Trigger {
@@ -2177,7 +2189,7 @@ pub const Window = extern struct {
             class.bindTemplateCallback("notify_menu_active", &propMenuActive);
             class.bindTemplateCallback("notify_quick_terminal", &propQuickTerminal);
             class.bindTemplateCallback("notify_scale_factor", &propScaleFactor);
-            class.bindTemplateCallback("sidebar_dirname", &closureSidebarDirname);
+            class.bindTemplateCallback("sidebar_cwd", &closureSidebarCwd);
             class.bindTemplateCallback("sidebar_hint", &closureSidebarHint);
             class.bindTemplateCallback("sidebar_hint_visible", &closureSidebarHintVisible);
             class.bindTemplateCallback("titlebar_style_is_tabs", &closureTitlebarStyleIsTab);
