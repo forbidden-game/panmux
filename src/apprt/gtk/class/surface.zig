@@ -1756,6 +1756,10 @@ pub const Surface = extern struct {
         // same, this notification may replace a previous notification
         const gio_app = app.as(gio.Application);
         gio_app.sendNotification(body, notification);
+
+        if (ext.getAncestor(Window, self.as(gtk.Widget))) |window| {
+            _ = window.panmuxDesktopNotification(self, title, body);
+        }
     }
 
     //---------------------------------------------------------------

@@ -751,6 +751,17 @@ pub const Window = extern struct {
         return true;
     }
 
+    pub fn panmuxDesktopNotification(
+        self: *Self,
+        surface: *Surface,
+        title: []const u8,
+        body: []const u8,
+    ) bool {
+        const tab = ext.getAncestor(Tab, surface.as(gtk.Widget)) orelse return false;
+        const page = self.private().tab_view.getPage(tab.as(gtk.Widget));
+        return self.panmuxNotifyParamsForPage(page, desktopNotificationPanmuxParams(title, body));
+    }
+
     pub fn panmuxSetStatus(self: *Self, params: panmux_ipc.Params) bool {
         const page = self.resolvePanmuxPage(params) orelse return false;
         self.applyPanmuxStatus(page, params);
@@ -760,6 +771,22 @@ pub const Window = extern struct {
     pub fn panmuxClearStatus(self: *Self, params: panmux_ipc.Params) bool {
         const page = self.resolvePanmuxPage(params) orelse return false;
         self.clearPanmuxStatus(page);
+        return true;
+    }
+
+    fn panmuxNotifyParamsForPage(self: *Self, page: *adw.TabPage, params: panmux_ipc.Params) bool {
+        self.applyPanmuxStatus(page, params);
+
+        const foreground = page.getSelected() != 0 and self.as(gtk.Window).isActive() != 0;
+        const state = params.state orelse "";
+        if (!foreground and !std.mem.eql(u8, state, "running")) {
+            page.setNeedsAttention(@intFromBool(true));
+        }
+
+        if (foreground) {
+            self.addToast(panmuxToastMessage(params));
+        }
+
         return true;
     }
 
@@ -849,6 +876,35 @@ pub const Window = extern struct {
         const value = std.mem.span(keyword);
         if (value.len == 0) return null;
         return value;
+    }
+
+    fn trimAsciiWhitespace(value: []const u8) []const u8 {
+        var start_idx: usize = 0;
+        var end_idx: usize = value.len;
+
+        while (start_idx < end_idx and std.ascii.isWhitespace(value[start_idx])) : (start_idx += 1) {}
+        while (end_idx > start_idx and std.ascii.isWhitespace(value[end_idx - 1])) : (end_idx -= 1) {}
+
+        return value[start_idx..end_idx];
+    }
+
+    fn desktopNotificationPanmuxParams(title: []const u8, body: []const u8) panmux_ipc.Params {
+        const clean_title = trimAsciiWhitespace(title);
+        const clean_body = trimAsciiWhitespace(body);
+
+        if (std.mem.eql(u8, clean_body, "pong")) {
+            return .{
+                .title = "Codex",
+                .body = "turn complete",
+                .state = "done",
+            };
+        }
+
+        return .{
+            .title = if (clean_title.len > 0) clean_title else "Ghostty",
+            .body = if (clean_body.len > 0) clean_body else null,
+            .state = "info",
+        };
     }
 
     fn pageMatchesPanmuxTarget(page: *adw.TabPage, params: panmux_ipc.Params) bool {
