@@ -468,6 +468,16 @@ pub const Application = extern struct {
         return self.private().core_app.alloc;
     }
 
+    pub fn panmuxInstanceId(self: *Self) ?[:0]const u8 {
+        const server = self.private().panmux orelse return null;
+        return server.instance_id;
+    }
+
+    pub fn panmuxSocketPath(self: *Self) ?[:0]const u8 {
+        const server = self.private().panmux orelse return null;
+        return server.socket_path;
+    }
+
     /// Get the original language that Ghostty was launched with. This returns a
     /// pointer to internal memory so it must be copied by callers.
     pub fn savedLanguage(self: *Self) ?[:0]const u8 {

@@ -31,6 +31,7 @@ const SearchOverlay = @import("search_overlay.zig").SearchOverlay;
 const KeyStateOverlay = @import("key_state_overlay.zig").KeyStateOverlay;
 const ChildExited = @import("surface_child_exited.zig").SurfaceChildExited;
 const ClipboardConfirmationDialog = @import("clipboard_confirmation_dialog.zig").ClipboardConfirmationDialog;
+const Tab = @import("tab.zig").Tab;
 const TitleDialog = @import("title_dialog.zig").TitleDialog;
 const Window = @import("window.zig").Window;
 const InspectorWindow = @import("inspector_window.zig").InspectorWindow;
@@ -1597,6 +1598,23 @@ pub const Surface = extern struct {
             if (window.isQuickTerminal()) {
                 try env.put("GHOSTTY_QUICK_TERMINAL", "1");
             }
+        }
+
+        if (app.panmuxInstanceId()) |instance_id| {
+            try env.put("PANMUX_INSTANCE_ID", instance_id);
+        }
+        if (app.panmuxSocketPath()) |socket_path| {
+            try env.put("PANMUX_SOCKET_PATH", socket_path);
+        }
+        if (ext.getAncestor(Tab, self.as(gtk.Widget))) |tab| {
+            var tab_buf: [32]u8 = undefined;
+            const tab_id = try std.fmt.bufPrint(&tab_buf, "{x}", .{@intFromPtr(tab)});
+            try env.put("PANMUX_TAB_ID", tab_id);
+        }
+        {
+            var surface_buf: [32]u8 = undefined;
+            const surface_id = try std.fmt.bufPrint(&surface_buf, "{x}", .{@intFromPtr(self)});
+            try env.put("PANMUX_SURFACE_ID", surface_id);
         }
 
         return env;
