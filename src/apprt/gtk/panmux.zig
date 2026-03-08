@@ -5,7 +5,7 @@ const ipc = @import("../../panmux_ipc.zig");
 pub const Server = struct {
     alloc: std.mem.Allocator,
     cookie: ?*anyopaque,
-    request_fn: *const fn (?*anyopaque, ipc.OwnedRequest) void,
+    request_fn: *const fn (?*anyopaque, ipc.OwnedRequest) ipc.OwnedResponse,
     socket_path: [:0]u8,
     instance_id: [:0]u8,
     running: std.atomic.Value(bool) = .init(false),
@@ -16,7 +16,7 @@ pub const Server = struct {
         self: *Server,
         alloc: std.mem.Allocator,
         cookie: ?*anyopaque,
-        request_fn: *const fn (?*anyopaque, ipc.OwnedRequest) void,
+        request_fn: *const fn (?*anyopaque, ipc.OwnedRequest) ipc.OwnedResponse,
     ) !void {
         const runtime_dir = std.posix.getenv("XDG_RUNTIME_DIR") orelse return error.MissingXdgRuntimeDir;
 
@@ -27,11 +27,7 @@ pub const Server = struct {
             else => return err,
         };
 
-        const instance_id_str = try std.fmt.allocPrint(
-            alloc,
-            "{d}-{d}",
-            .{ std.c.getpid(), std.time.milliTimestamp() },
-        );
+        const instance_id_str = try std.fmt.allocPrint(alloc, "{d}-{d}", .{ std.c.getpid(), std.time.milliTimestamp() });
         defer alloc.free(instance_id_str);
         const instance_id = try alloc.dupeZ(u8, instance_id_str);
         errdefer alloc.free(instance_id);
@@ -90,35 +86,38 @@ pub const Server = struct {
         defer conn.stream.close();
 
         const line = readLineAlloc(self.alloc, conn.stream, 8192) catch {
-            writeResponse(conn.stream, .{ .ok = false, .@"error" = "read_failed" }) catch {};
+            writeOwnedResponse(conn.stream, ipc.OwnedResponse.failure(self.alloc, "read_failed") catch ipc.OwnedResponse{ .ok = false }) catch {};
             return;
         };
         defer self.alloc.free(line);
 
         const request = ipc.parseRequestLeaky(self.alloc, line) catch {
-            writeResponse(conn.stream, .{ .ok = false, .@"error" = "invalid_json" }) catch {};
+            writeOwnedResponse(conn.stream, ipc.OwnedResponse.failure(self.alloc, "invalid_json") catch ipc.OwnedResponse{ .ok = false }) catch {};
             return;
         };
 
         if (!isSupportedMethod(request.method)) {
-            writeResponse(conn.stream, .{ .ok = false, .@"error" = "unsupported_method" }) catch {};
+            writeOwnedResponse(conn.stream, ipc.OwnedResponse.failure(self.alloc, "unsupported_method") catch ipc.OwnedResponse{ .ok = false }) catch {};
             return;
         }
 
         const owned = ipc.OwnedRequest.clone(self.alloc, request) catch {
-            writeResponse(conn.stream, .{ .ok = false, .@"error" = "oom" }) catch {};
+            writeOwnedResponse(conn.stream, ipc.OwnedResponse.failure(self.alloc, "oom") catch ipc.OwnedResponse{ .ok = false }) catch {};
             return;
         };
 
-        self.request_fn(self.cookie, owned);
-        writeResponse(conn.stream, .{ .ok = true }) catch {};
+        var response = self.request_fn(self.cookie, owned);
+        defer response.deinit(self.alloc);
+        writeOwnedResponse(conn.stream, response) catch {};
     }
 };
 
 fn isSupportedMethod(method: []const u8) bool {
     return std.mem.eql(u8, method, "notify") or
         std.mem.eql(u8, method, "set-status") or
-        std.mem.eql(u8, method, "clear-status");
+        std.mem.eql(u8, method, "clear-status") or
+        std.mem.eql(u8, method, "focus-tab") or
+        std.mem.eql(u8, method, "list-tabs");
 }
 
 fn readLineAlloc(alloc: std.mem.Allocator, stream: net.Stream, limit: usize) ![]u8 {
@@ -141,9 +140,9 @@ fn readLineAlloc(alloc: std.mem.Allocator, stream: net.Stream, limit: usize) ![]
     return try list.toOwnedSlice(alloc);
 }
 
-fn writeResponse(stream: net.Stream, response: ipc.Response) !void {
-    var writer_buf: [256]u8 = undefined;
+fn writeOwnedResponse(stream: net.Stream, response: ipc.OwnedResponse) !void {
+    var writer_buf: [2048]u8 = undefined;
     var writer = stream.writer(&writer_buf);
-    try ipc.writeResponse(&writer.interface, response);
+    try ipc.writeOwnedResponse(&writer.interface, response);
     try writer.interface.flush();
 }

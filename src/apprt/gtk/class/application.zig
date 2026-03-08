@@ -1954,42 +1954,59 @@ fn getPanmuxWindow(params: panmux_ipc.Params) ?*Window {
     return null;
 }
 
-fn panmuxRequestCallback(cookie: ?*anyopaque, request: panmux_ipc.OwnedRequest) void {
+fn panmuxRequestCallback(cookie: ?*anyopaque, request: panmux_ipc.OwnedRequest) panmux_ipc.OwnedResponse {
     const self: *Application = @ptrCast(@alignCast(cookie orelse {
         var owned = request;
         owned.deinit(std.heap.c_allocator);
-        return;
+        return panmux_ipc.OwnedResponse.failure(std.heap.c_allocator, "missing_cookie") catch panmux_ipc.OwnedResponse{ .ok = false };
     }));
 
     const pending = std.heap.c_allocator.create(PendingPanmuxRequest) catch {
         var owned = request;
         owned.deinit(std.heap.c_allocator);
-        return;
+        return panmux_ipc.OwnedResponse.failure(std.heap.c_allocator, "oom") catch panmux_ipc.OwnedResponse{ .ok = false };
     };
     pending.* = .{ .app = self, .request = request };
+
+    pending.mutex.lock();
     _ = glib.idleAdd(panmuxIdleRequest, pending);
+    while (!pending.done) {
+        pending.cond.wait(&pending.mutex);
+    }
+    pending.mutex.unlock();
+
+    const response = pending.response orelse panmux_ipc.OwnedResponse.failure(std.heap.c_allocator, "no_response") catch panmux_ipc.OwnedResponse{ .ok = false };
+    std.heap.c_allocator.destroy(pending);
+    return response;
 }
 
 const PendingPanmuxRequest = struct {
     app: *Application,
     request: panmux_ipc.OwnedRequest,
+    mutex: std.Thread.Mutex = .{},
+    cond: std.Thread.Condition = .{},
+    done: bool = false,
+    response: ?panmux_ipc.OwnedResponse = null,
 };
 
 fn panmuxIdleRequest(ud: ?*anyopaque) callconv(.c) c_int {
     const pending: *PendingPanmuxRequest = @ptrCast(@alignCast(ud orelse return 0));
-    defer {
-        pending.request.deinit(std.heap.c_allocator);
-        std.heap.c_allocator.destroy(pending);
-    }
+    defer pending.request.deinit(std.heap.c_allocator);
 
-    handlePanmuxRequest(pending.app, pending.request.borrowed());
+    const response = handlePanmuxRequest(pending.app, pending.request.borrowed());
+
+    pending.mutex.lock();
+    pending.response = response;
+    pending.done = true;
+    pending.cond.signal();
+    pending.mutex.unlock();
     return 0;
 }
 
-fn handlePanmuxRequest(_: *Application, request: panmux_ipc.Request) void {
+fn handlePanmuxRequest(_: *Application, request: panmux_ipc.Request) panmux_ipc.OwnedResponse {
     const window = getPanmuxWindow(request.params) orelse {
         log.warn("panmux request target not found method={s}", .{request.method});
-        return;
+        return panmux_ipc.OwnedResponse.failure(std.heap.c_allocator, "target_not_found") catch panmux_ipc.OwnedResponse{ .ok = false };
     };
 
     if (std.mem.eql(u8, request.method, "notify")) {
@@ -1997,8 +2014,10 @@ fn handlePanmuxRequest(_: *Application, request: panmux_ipc.Request) void {
             "panmux notify state={s} title={s}",
             .{ request.params.state orelse "", request.params.title orelse "" },
         );
-        _ = window.panmuxNotify(request.params);
-        return;
+        if (!window.panmuxNotify(request.params)) {
+            return panmux_ipc.OwnedResponse.failure(std.heap.c_allocator, "target_not_found") catch panmux_ipc.OwnedResponse{ .ok = false };
+        }
+        return panmux_ipc.OwnedResponse.success();
     }
 
     if (std.mem.eql(u8, request.method, "set-status")) {
@@ -2006,17 +2025,39 @@ fn handlePanmuxRequest(_: *Application, request: panmux_ipc.Request) void {
             "panmux set-status state={s} title={s}",
             .{ request.params.state orelse "", request.params.title orelse "" },
         );
-        _ = window.panmuxSetStatus(request.params);
-        return;
+        if (!window.panmuxSetStatus(request.params)) {
+            return panmux_ipc.OwnedResponse.failure(std.heap.c_allocator, "target_not_found") catch panmux_ipc.OwnedResponse{ .ok = false };
+        }
+        return panmux_ipc.OwnedResponse.success();
     }
 
     if (std.mem.eql(u8, request.method, "clear-status")) {
         log.info("panmux clear-status", .{});
-        _ = window.panmuxClearStatus(request.params);
-        return;
+        if (!window.panmuxClearStatus(request.params)) {
+            return panmux_ipc.OwnedResponse.failure(std.heap.c_allocator, "target_not_found") catch panmux_ipc.OwnedResponse{ .ok = false };
+        }
+        return panmux_ipc.OwnedResponse.success();
+    }
+
+    if (std.mem.eql(u8, request.method, "focus-tab")) {
+        log.info("panmux focus-tab", .{});
+        if (!window.panmuxFocusTab(request.params)) {
+            return panmux_ipc.OwnedResponse.failure(std.heap.c_allocator, "target_not_found") catch panmux_ipc.OwnedResponse{ .ok = false };
+        }
+        return panmux_ipc.OwnedResponse.success();
+    }
+
+    if (std.mem.eql(u8, request.method, "list-tabs")) {
+        log.info("panmux list-tabs", .{});
+        const tabs = window.panmuxListTabs(std.heap.c_allocator) catch |err| {
+            log.warn("panmux list-tabs failed err={}", .{err});
+            return panmux_ipc.OwnedResponse.failure(std.heap.c_allocator, "list_tabs_failed") catch panmux_ipc.OwnedResponse{ .ok = false };
+        };
+        return .{ .ok = true, .tabs = tabs };
     }
 
     log.warn("panmux unsupported method={s}", .{request.method});
+    return panmux_ipc.OwnedResponse.failure(std.heap.c_allocator, "unsupported_method") catch panmux_ipc.OwnedResponse{ .ok = false };
 }
 
 const Action = struct {

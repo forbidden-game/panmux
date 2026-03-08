@@ -7,6 +7,8 @@ const usage =
     "  panmuxctl notify [--socket PATH] [--title TEXT] [--body TEXT] [--state TEXT] [--tab N] [--tab-id ID] [--surface-id ID]\n" ++
     "  panmuxctl set-status [--socket PATH] --state TEXT [--title TEXT] [--body TEXT] [--tab N] [--tab-id ID] [--surface-id ID]\n" ++
     "  panmuxctl clear-status [--socket PATH] [--tab N] [--tab-id ID] [--surface-id ID]\n" ++
+    "  panmuxctl focus-tab [--socket PATH] [--tab N] [--tab-id ID] [--surface-id ID]\n" ++
+    "  panmuxctl list-tabs [--socket PATH] [--tab N] [--tab-id ID] [--surface-id ID]\n" ++
     "\n" ++
     "Environment fallback:\n" ++
     "  PANMUX_SOCKET_PATH\n" ++
@@ -108,33 +110,44 @@ pub fn main() !void {
 
     var writer_buf: [1024]u8 = undefined;
     var writer = stream.writer(&writer_buf);
-    try ipc.writeRequest(&writer.interface, .{
-        .method = cmd,
-        .params = params,
-    });
+    try ipc.writeRequest(&writer.interface, .{ .method = cmd, .params = params });
     try writer.interface.flush();
 
-    var response_buf: [1024]u8 = undefined;
+    var response_buf: [32 * 1024]u8 = undefined;
     const n = try stream.read(&response_buf);
     if (n == 0) return;
 
     const line = std.mem.trim(u8, response_buf[0..n], " \r\n\t");
-    const response = try std.json.parseFromSliceLeaky(
+    var parsed = try std.json.parseFromSlice(
         ipc.Response,
         alloc,
         line,
         .{ .allocate = .alloc_if_needed, .ignore_unknown_fields = true },
     );
+    defer parsed.deinit();
+    const response = parsed.value;
+
     if (!response.ok) {
         std.log.err("server error: {s}", .{response.@"error" orelse "unknown error"});
         std.process.exit(1);
+    }
+
+    if (std.mem.eql(u8, cmd, "list-tabs")) {
+        const stdout = std.fs.File.stdout();
+        var stdout_buf: [32 * 1024]u8 = undefined;
+        var stdout_writer = stdout.writer(&stdout_buf);
+        const tabs = response.tabs orelse &.{};
+        try stdout_writer.interface.print("{f}\n", .{std.json.fmt(tabs, ipc.json_opts)});
+        try stdout_writer.interface.flush();
     }
 }
 
 fn isSupportedCommand(cmd: []const u8) bool {
     return std.mem.eql(u8, cmd, "notify") or
         std.mem.eql(u8, cmd, "set-status") or
-        std.mem.eql(u8, cmd, "clear-status");
+        std.mem.eql(u8, cmd, "clear-status") or
+        std.mem.eql(u8, cmd, "focus-tab") or
+        std.mem.eql(u8, cmd, "list-tabs");
 }
 
 fn printUsageAndExit(code: u8) !void {

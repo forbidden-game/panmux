@@ -763,6 +763,32 @@ pub const Window = extern struct {
         return true;
     }
 
+    pub fn panmuxFocusTab(self: *Self, params: panmux_ipc.Params) bool {
+        const page = self.resolvePanmuxPage(params) orelse return false;
+        self.private().tab_view.setSelectedPage(page);
+        self.focusActiveSurface();
+        self.as(gtk.Window).present();
+        return true;
+    }
+
+    pub fn panmuxListTabs(self: *Self, alloc: std.mem.Allocator) ![]panmux_ipc.OwnedTabInfo {
+        const n_pages = self.private().tab_view.getNPages();
+        const n: usize = @intCast(@max(n_pages, 0));
+        const tabs = try alloc.alloc(panmux_ipc.OwnedTabInfo, n);
+        errdefer alloc.free(tabs);
+
+        var built: usize = 0;
+        errdefer {
+            for (tabs[0..built]) |*tab| tab.deinit(alloc);
+        }
+
+        while (built < n) : (built += 1) {
+            tabs[built] = try self.snapshotPanmuxTab(alloc, self.private().tab_view.getNthPage(@intCast(built)), @intCast(built + 1));
+        }
+
+        return tabs;
+    }
+
     fn resolvePanmuxPage(self: *Self, params: panmux_ipc.Params) ?*adw.TabPage {
         const priv = self.private();
 
@@ -788,6 +814,41 @@ pub const Window = extern struct {
         }
 
         return priv.tab_view.getSelectedPage();
+    }
+
+    fn snapshotPanmuxTab(
+        self: *Self,
+        alloc: std.mem.Allocator,
+        page: *adw.TabPage,
+        index: u32,
+    ) !panmux_ipc.OwnedTabInfo {
+        _ = self;
+        const child = page.getChild();
+        const tab = gobject.ext.cast(Tab, child) orelse return error.InvalidTabPage;
+        const surface = tab.getActiveSurface();
+        const pwd = if (surface) |v| v.getPwd() else null;
+        const state = keywordOrNull(page.getKeyword());
+
+        var info = panmux_ipc.OwnedTabInfo{
+            .index = index,
+            .title = try alloc.dupeZ(u8, std.mem.span(page.getTitle())),
+            .cwd = if (pwd) |value| try alloc.dupeZ(u8, value) else null,
+            .state = if (state) |value| try alloc.dupeZ(u8, value) else null,
+            .tab_id = try ptrIdAlloc(alloc, tab),
+            .surface_id = if (surface) |value| try ptrIdAlloc(alloc, value) else null,
+            .selected = page.getSelected() != 0,
+            .needs_attention = page.getNeedsAttention() != 0,
+            .loading = page.getLoading() != 0,
+        };
+        errdefer info.deinit(alloc);
+        return info;
+    }
+
+    fn keywordOrNull(keyword_: ?[*:0]const u8) ?[]const u8 {
+        const keyword = keyword_ orelse return null;
+        const value = std.mem.span(keyword);
+        if (value.len == 0) return null;
+        return value;
     }
 
     fn pageMatchesPanmuxTarget(page: *adw.TabPage, params: panmux_ipc.Params) bool {
@@ -819,6 +880,12 @@ pub const Window = extern struct {
         var buf: [32]u8 = undefined;
         const actual = std.fmt.bufPrint(&buf, "{x}", .{@intFromPtr(ptr)}) catch return false;
         return std.mem.eql(u8, actual, expected);
+    }
+
+    fn ptrIdAlloc(alloc: std.mem.Allocator, ptr: anytype) ![:0]u8 {
+        const value = try std.fmt.allocPrint(alloc, "{x}", .{@intFromPtr(ptr)});
+        defer alloc.free(value);
+        return try alloc.dupeZ(u8, value);
     }
 
     fn applyPanmuxStatus(self: *Self, page: *adw.TabPage, params: panmux_ipc.Params) void {
