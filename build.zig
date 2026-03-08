@@ -62,6 +62,19 @@ pub fn build(b: *std.Build) !void {
     // Ghostty executable, the actual runnable Ghostty program.
     const exe = try buildpkg.GhosttyExe.init(b, &config, &deps);
 
+    const panmuxctl = b.addExecutable(.{
+        .name = "panmuxctl",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main_panmuxctl.zig"),
+            .target = config.target,
+            .optimize = config.optimize,
+            .strip = config.strip,
+        }),
+        .use_llvm = true,
+    });
+    if (config.pie) panmuxctl.pie = true;
+    const panmuxctl_install = b.addInstallArtifact(panmuxctl, .{});
+
     // Ghostty docs
     const docs = try buildpkg.GhosttyDocs.init(b, &deps);
     if (config.emit_docs) {
@@ -125,6 +138,7 @@ pub fn build(b: *std.Build) !void {
     if (config.app_runtime != .none) {
         if (config.emit_exe) {
             exe.install();
+            b.getInstallStep().dependOn(&panmuxctl_install.step);
             resources.install();
             if (i18n) |v| v.install();
         }

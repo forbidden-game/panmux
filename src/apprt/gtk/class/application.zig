@@ -40,6 +40,8 @@ const Tab = @import("tab.zig").Tab;
 const CloseConfirmationDialog = @import("close_confirmation_dialog.zig").CloseConfirmationDialog;
 const ConfigErrorsDialog = @import("config_errors_dialog.zig").ConfigErrorsDialog;
 const GlobalShortcuts = @import("global_shortcuts.zig").GlobalShortcuts;
+const panmux = @import("../panmux.zig");
+const panmux_ipc = @import("../../../panmux_ipc.zig");
 
 const log = std.log.scoped(.gtk_ghostty_application);
 
@@ -175,6 +177,9 @@ pub const Application = extern struct {
 
         /// The global shortcut logic.
         global_shortcuts: *GlobalShortcuts,
+
+        /// Panmux control plane server.
+        panmux: ?*panmux.Server = null,
 
         /// This is set to true so long as we request a window exactly
         /// once. This prevents quitting the app before we've shown one
@@ -430,6 +435,10 @@ pub const Application = extern struct {
     pub fn deinit(self: *Self) void {
         const alloc = self.allocator();
         const priv: *Private = self.private();
+        if (priv.panmux) |server| {
+            server.deinit();
+            std.heap.c_allocator.destroy(server);
+        }
         priv.config.unref();
         priv.winproto.deinit(alloc);
         priv.global_shortcuts.unref();
@@ -1302,6 +1311,9 @@ pub const Application = extern struct {
         // Setup our global shortcuts
         self.startupGlobalShortcuts();
 
+        // Setup our panmux control plane.
+        self.startupPanmux();
+
         // If we have any config diagnostics from loading, then we
         // show the diagnostics dialog. We show this one as a general
         // modal (not to any specific window) because we don't even
@@ -1408,6 +1420,24 @@ pub const Application = extern struct {
     }
 
     /// Setup our global shortcuts.
+    fn startupPanmux(self: *Self) void {
+        const priv = self.private();
+        const server = std.heap.c_allocator.create(panmux.Server) catch {
+            log.warn("failed to allocate panmux control plane", .{});
+            return;
+        };
+        errdefer std.heap.c_allocator.destroy(server);
+        server.init(std.heap.c_allocator, self, panmuxNotifyCallback) catch |err| {
+            log.warn("failed to start panmux control plane err={}", .{err});
+            return;
+        };
+        priv.panmux = server;
+        log.info(
+            "panmux control plane instance={s} socket={s}",
+            .{ server.instance_id, server.socket_path },
+        );
+    }
+
     fn startupGlobalShortcuts(self: *Self) void {
         const priv = self.private();
 
@@ -1484,7 +1514,7 @@ pub const Application = extern struct {
 
     /// SIGUSR2 signal handler via g_unix_signal_add
     fn handleSigusr2(ud: ?*anyopaque) callconv(.c) c_int {
-        const self: *Self = @ptrCast(@alignCast(ud orelse
+        const self: *Application = @ptrCast(@alignCast(ud orelse
             return @intFromBool(glib.SOURCE_CONTINUE)));
 
         log.info("received SIGUSR2, reloading configuration", .{});
@@ -1510,7 +1540,7 @@ pub const Application = extern struct {
     }
 
     fn handleQuitTimerExpired(ud: ?*anyopaque) callconv(.c) c_int {
-        const self: *Self = @ptrCast(@alignCast(ud));
+        const self: *Application = @ptrCast(@alignCast(ud));
         const priv = self.private();
         priv.quit_timer = .expired;
         return 0;
@@ -1874,6 +1904,67 @@ pub const Application = extern struct {
 };
 
 /// All apprt action handlers
+fn getActiveWindow() ?*Window {
+    const list = gtk.Window.listToplevels();
+    defer list.free();
+
+    if (@as(?*glib.List, list.findCustom(null, findActiveWindow))) |node| {
+        const data = node.f_data orelse return null;
+        return gobject.ext.cast(Window, @as(*gtk.Window, @ptrCast(@alignCast(data))));
+    }
+
+    var current: ?*glib.List = list;
+    while (current) |node| : (current = node.f_next) {
+        const data = node.f_data orelse continue;
+        const gtk_window: *gtk.Window = @ptrCast(@alignCast(data));
+        if (gtk_window.as(gtk.Widget).isVisible() == 0) continue;
+        if (gobject.ext.cast(Window, gtk_window)) |window| return window;
+    }
+
+    return null;
+}
+
+fn panmuxNotifyCallback(cookie: ?*anyopaque, notify: panmux_ipc.OwnedNotify) void {
+    const self: *Application = @ptrCast(@alignCast(cookie orelse {
+        var owned = notify;
+        owned.deinit(std.heap.c_allocator);
+        return;
+    }));
+
+    const pending = std.heap.c_allocator.create(PendingPanmuxNotify) catch {
+        var owned = notify;
+        owned.deinit(std.heap.c_allocator);
+        return;
+    };
+    pending.* = .{ .app = self, .notify = notify };
+    _ = glib.idleAdd(panmuxIdleNotify, pending);
+}
+
+const PendingPanmuxNotify = struct {
+    app: *Application,
+    notify: panmux_ipc.OwnedNotify,
+};
+
+fn panmuxIdleNotify(ud: ?*anyopaque) callconv(.c) c_int {
+    const pending: *PendingPanmuxNotify = @ptrCast(@alignCast(ud orelse return 0));
+    defer {
+        pending.notify.deinit(std.heap.c_allocator);
+        std.heap.c_allocator.destroy(pending);
+    }
+
+    handlePanmuxNotify(pending.app, pending.notify.borrowed());
+    return 0;
+}
+
+fn handlePanmuxNotify(_: *Application, notify: panmux_ipc.NotifyParams) void {
+    const window = getActiveWindow() orelse return;
+    log.info(
+        "panmux notify state={s} title={s}",
+        .{ notify.state orelse "", notify.title orelse "" },
+    );
+    window.panmuxNotify(notify);
+}
+
 const Action = struct {
     pub fn closeTab(target: apprt.Target, value: apprt.Action.Value(.close_tab)) bool {
         switch (target) {

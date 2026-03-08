@@ -16,7 +16,6 @@ const TitlebarStyle = configpkg.Config.GtkTitlebarStyle;
 const input = @import("../../../input.zig");
 const CoreSurface = @import("../../../Surface.zig");
 const ext = @import("../ext.zig");
-const gtk_key = @import("../key.zig");
 const gtk_version = @import("../gtk_version.zig");
 const adw_version = @import("../adw_version.zig");
 const gresource = @import("../build/gresource.zig");
@@ -30,6 +29,7 @@ const Surface = @import("surface.zig").Surface;
 const Tab = @import("tab.zig").Tab;
 const DebugWarning = @import("debug_warning.zig").DebugWarning;
 const CommandPalette = @import("command_palette.zig").CommandPalette;
+const panmux_ipc = @import("../../../panmux_ipc.zig");
 const WeakRef = @import("../weak_ref.zig").WeakRef;
 
 const log = std.log.scoped(.gtk_ghostty_window);
@@ -730,6 +730,44 @@ pub const Window = extern struct {
         action.setEnabled(@intFromBool(has_selection));
     }
 
+    pub fn panmuxNotify(self: *Self, notify: panmux_ipc.NotifyParams) void {
+        const priv = self.private();
+        const page = page: {
+            if (notify.tab_index) |tab_index| {
+                if (tab_index == 0) return;
+                const idx: c_int = @intCast(tab_index - 1);
+                if (idx < 0 or idx >= priv.tab_view.getNPages()) return;
+                break :page priv.tab_view.getNthPage(idx);
+            }
+            break :page priv.tab_view.getSelectedPage() orelse return;
+        };
+
+        const selected = page.getSelected() != 0;
+        const active = self.as(gtk.Window).isActive() != 0;
+        const state = notify.state orelse "";
+        if (!selected and !std.mem.eql(u8, state, "running")) {
+            page.setNeedsAttention(@intFromBool(true));
+        }
+
+        if (selected and active) {
+            self.addToast(panmuxToastMessage(notify));
+        }
+    }
+
+    fn panmuxToastMessage(notify: panmux_ipc.NotifyParams) [*:0]const u8 {
+        const title = notify.title orelse notify.state orelse "Panmux";
+        const body = notify.body orelse "";
+
+        var buf: [512]u8 = undefined;
+        if (body.len > 0) {
+            const msg = std.fmt.bufPrintZ(&buf, "{s}: {s}", .{ title, body }) catch return "Panmux";
+            return msg;
+        }
+
+        const msg = std.fmt.bufPrintZ(&buf, "{s}", .{title}) catch return "Panmux";
+        return msg;
+    }
+
     fn toggleCssClass(self: *Self, class: [:0]const u8, value: bool) void {
         const widget = self.as(gtk.Widget);
         if (value)
@@ -1254,32 +1292,23 @@ pub const Window = extern struct {
         return glib.ext.dupeZ(u8, path);
     }
 
-    fn sidebarHintTrigger(self: *Self, pos: c_uint) ?input.Binding.Trigger {
-        if (pos >= 9) return null;
-        const config = self.getConfig() orelse return null;
-        return config.get().keybind.set.getTrigger(.{ .goto_tab = @intCast(pos + 1) });
-    }
-
     fn closureSidebarHint(
-        self: *Self,
+        _: *Self,
         pos: c_uint,
     ) callconv(.c) [*:0]const u8 {
-        const trigger = self.sidebarHintTrigger(pos) orelse return glib.ext.dupeZ(u8, "");
+        if (pos >= 9) return glib.ext.dupeZ(u8, "");
 
-        var buf: [64]u8 = undefined;
-        var writer: std.Io.Writer = .fixed(&buf);
-        const success = gtk_key.labelFromTrigger(&writer, trigger) catch
+        var buf: [16]u8 = undefined;
+        const hint = std.fmt.bufPrintZ(&buf, "Alt+{}", .{pos + 1}) catch
             return glib.ext.dupeZ(u8, "");
-        if (!success) return glib.ext.dupeZ(u8, "");
-
-        return glib.ext.dupeZ(u8, writer.buffered());
+        return glib.ext.dupeZ(u8, hint);
     }
 
     fn closureSidebarHintVisible(
-        self: *Self,
+        _: *Self,
         pos: c_uint,
     ) callconv(.c) c_int {
-        return @intFromBool(self.sidebarHintTrigger(pos) != null);
+        return @intFromBool(pos < 9);
     }
 
     //---------------------------------------------------------------
