@@ -5,7 +5,7 @@ const ipc = @import("../../panmux_ipc.zig");
 pub const Server = struct {
     alloc: std.mem.Allocator,
     cookie: ?*anyopaque,
-    notify_fn: *const fn (?*anyopaque, ipc.OwnedNotify) void,
+    request_fn: *const fn (?*anyopaque, ipc.OwnedRequest) void,
     socket_path: [:0]u8,
     instance_id: [:0]u8,
     running: std.atomic.Value(bool) = .init(false),
@@ -16,7 +16,7 @@ pub const Server = struct {
         self: *Server,
         alloc: std.mem.Allocator,
         cookie: ?*anyopaque,
-        notify_fn: *const fn (?*anyopaque, ipc.OwnedNotify) void,
+        request_fn: *const fn (?*anyopaque, ipc.OwnedRequest) void,
     ) !void {
         const runtime_dir = std.posix.getenv("XDG_RUNTIME_DIR") orelse return error.MissingXdgRuntimeDir;
 
@@ -53,7 +53,7 @@ pub const Server = struct {
         self.* = .{
             .alloc = alloc,
             .cookie = cookie,
-            .notify_fn = notify_fn,
+            .request_fn = request_fn,
             .socket_path = socket_path,
             .instance_id = instance_id,
             .running = .init(true),
@@ -100,20 +100,26 @@ pub const Server = struct {
             return;
         };
 
-        if (!std.mem.eql(u8, request.method, "notify")) {
+        if (!isSupportedMethod(request.method)) {
             writeResponse(conn.stream, .{ .ok = false, .@"error" = "unsupported_method" }) catch {};
             return;
         }
 
-        const owned = ipc.OwnedNotify.clone(self.alloc, request.params) catch {
+        const owned = ipc.OwnedRequest.clone(self.alloc, request) catch {
             writeResponse(conn.stream, .{ .ok = false, .@"error" = "oom" }) catch {};
             return;
         };
 
-        self.notify_fn(self.cookie, owned);
+        self.request_fn(self.cookie, owned);
         writeResponse(conn.stream, .{ .ok = true }) catch {};
     }
 };
+
+fn isSupportedMethod(method: []const u8) bool {
+    return std.mem.eql(u8, method, "notify") or
+        std.mem.eql(u8, method, "set-status") or
+        std.mem.eql(u8, method, "clear-status");
+}
 
 fn readLineAlloc(alloc: std.mem.Allocator, stream: net.Stream, limit: usize) ![]u8 {
     var list: std.ArrayList(u8) = .empty;

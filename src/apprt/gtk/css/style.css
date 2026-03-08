@@ -229,6 +229,17 @@ label.resize-overlay {
   min-width: 42px;
 }
 
+.panmux-sidebar-pill {
+  background-color: rgba(255, 255, 255, 0.08);
+  border-radius: 999px;
+  padding: 3px 8px;
+}
+
+.panmux-sidebar-status {
+  font-weight: 600;
+  text-transform: lowercase;
+}
+
 .panmux-sidebar-dot {
   background-color: rgb(224, 27, 36);
   border-radius: 999px;

@@ -4,10 +4,14 @@ const ipc = @import("panmux_ipc.zig");
 
 const usage =
     "Usage:\n" ++
-    "  panmuxctl notify [--socket PATH] [--title TEXT] [--body TEXT] [--state TEXT] [--tab N]\n" ++
+    "  panmuxctl notify [--socket PATH] [--title TEXT] [--body TEXT] [--state TEXT] [--tab N] [--tab-id ID] [--surface-id ID]\n" ++
+    "  panmuxctl set-status [--socket PATH] --state TEXT [--title TEXT] [--body TEXT] [--tab N] [--tab-id ID] [--surface-id ID]\n" ++
+    "  panmuxctl clear-status [--socket PATH] [--tab N] [--tab-id ID] [--surface-id ID]\n" ++
     "\n" ++
     "Environment fallback:\n" ++
-    "  PANMUX_SOCKET_PATH\n";
+    "  PANMUX_SOCKET_PATH\n" ++
+    "  PANMUX_TAB_ID\n" ++
+    "  PANMUX_SURFACE_ID\n";
 
 pub fn main() !void {
     var gpa_state: std.heap.DebugAllocator(.{}) = .init;
@@ -19,13 +23,10 @@ pub fn main() !void {
 
     _ = args.next();
     const cmd = args.next() orelse return printUsageAndExit(1);
-    if (!std.mem.eql(u8, cmd, "notify")) return printUsageAndExit(1);
+    if (!isSupportedCommand(cmd)) return printUsageAndExit(1);
 
     var socket_path: ?[]const u8 = null;
-    var title: ?[]const u8 = null;
-    var body: ?[]const u8 = null;
-    var state: ?[]const u8 = null;
-    var tab_index: ?u32 = null;
+    var params: ipc.Params = .{};
 
     while (args.next()) |arg| {
         if (std.mem.eql(u8, arg, "--socket")) {
@@ -33,35 +34,72 @@ pub fn main() !void {
             continue;
         }
         if (std.mem.eql(u8, arg, "--title")) {
-            title = args.next() orelse return printUsageAndExit(1);
+            params.title = args.next() orelse return printUsageAndExit(1);
             continue;
         }
         if (std.mem.eql(u8, arg, "--body")) {
-            body = args.next() orelse return printUsageAndExit(1);
+            params.body = args.next() orelse return printUsageAndExit(1);
             continue;
         }
         if (std.mem.eql(u8, arg, "--state")) {
-            state = args.next() orelse return printUsageAndExit(1);
+            params.state = args.next() orelse return printUsageAndExit(1);
             continue;
         }
         if (std.mem.eql(u8, arg, "--tab")) {
             const value = args.next() orelse return printUsageAndExit(1);
-            tab_index = try std.fmt.parseUnsigned(u32, value, 10);
+            params.tab_index = try std.fmt.parseUnsigned(u32, value, 10);
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--tab-id")) {
+            params.tab_id = args.next() orelse return printUsageAndExit(1);
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--surface-id")) {
+            params.surface_id = args.next() orelse return printUsageAndExit(1);
             continue;
         }
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             return printUsageAndExit(0);
         }
+
         std.log.err("unknown argument: {s}", .{arg});
         return printUsageAndExit(1);
     }
 
-    const socket = socket_path orelse std.process.getEnvVarOwned(alloc, "PANMUX_SOCKET_PATH") catch |err| switch (err) {
-        error.EnvironmentVariableNotFound => {
-            std.log.err("missing --socket and PANMUX_SOCKET_PATH", .{});
-            return printUsageAndExit(1);
-        },
-        else => return err,
+    if (std.mem.eql(u8, cmd, "set-status") and params.state == null) {
+        std.log.err("set-status requires --state", .{});
+        return printUsageAndExit(1);
+    }
+
+    var owned_tab_id: ?[]const u8 = null;
+    if (params.tab_id == null) {
+        owned_tab_id = std.process.getEnvVarOwned(alloc, "PANMUX_TAB_ID") catch |err| switch (err) {
+            error.EnvironmentVariableNotFound => null,
+            else => return err,
+        };
+        params.tab_id = owned_tab_id;
+    }
+    defer if (owned_tab_id) |value| alloc.free(value);
+
+    var owned_surface_id: ?[]const u8 = null;
+    if (params.surface_id == null) {
+        owned_surface_id = std.process.getEnvVarOwned(alloc, "PANMUX_SURFACE_ID") catch |err| switch (err) {
+            error.EnvironmentVariableNotFound => null,
+            else => return err,
+        };
+        params.surface_id = owned_surface_id;
+    }
+    defer if (owned_surface_id) |value| alloc.free(value);
+
+    const socket = socket_path orelse socket: {
+        const value = std.process.getEnvVarOwned(alloc, "PANMUX_SOCKET_PATH") catch |err| switch (err) {
+            error.EnvironmentVariableNotFound => {
+                std.log.err("missing --socket and PANMUX_SOCKET_PATH", .{});
+                return printUsageAndExit(1);
+            },
+            else => return err,
+        };
+        break :socket value;
     };
     defer if (socket_path == null) alloc.free(socket);
 
@@ -71,25 +109,32 @@ pub fn main() !void {
     var writer_buf: [1024]u8 = undefined;
     var writer = stream.writer(&writer_buf);
     try ipc.writeRequest(&writer.interface, .{
-        .method = "notify",
-        .params = .{
-            .title = title,
-            .body = body,
-            .state = state,
-            .tab_index = tab_index,
-        },
+        .method = cmd,
+        .params = params,
     });
     try writer.interface.flush();
 
     var response_buf: [1024]u8 = undefined;
     const n = try stream.read(&response_buf);
     if (n == 0) return;
+
     const line = std.mem.trim(u8, response_buf[0..n], " \r\n\t");
-    const response = try std.json.parseFromSliceLeaky(ipc.Response, alloc, line, .{ .allocate = .alloc_if_needed, .ignore_unknown_fields = true });
+    const response = try std.json.parseFromSliceLeaky(
+        ipc.Response,
+        alloc,
+        line,
+        .{ .allocate = .alloc_if_needed, .ignore_unknown_fields = true },
+    );
     if (!response.ok) {
         std.log.err("server error: {s}", .{response.@"error" orelse "unknown error"});
         std.process.exit(1);
     }
+}
+
+fn isSupportedCommand(cmd: []const u8) bool {
+    return std.mem.eql(u8, cmd, "notify") or
+        std.mem.eql(u8, cmd, "set-status") or
+        std.mem.eql(u8, cmd, "clear-status");
 }
 
 fn printUsageAndExit(code: u8) !void {

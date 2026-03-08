@@ -1437,7 +1437,7 @@ pub const Application = extern struct {
             return;
         };
         errdefer std.heap.c_allocator.destroy(server);
-        server.init(std.heap.c_allocator, self, panmuxNotifyCallback) catch |err| {
+        server.init(std.heap.c_allocator, self, panmuxRequestCallback) catch |err| {
             log.warn("failed to start panmux control plane err={}", .{err});
             return;
         };
@@ -1934,45 +1934,89 @@ fn getActiveWindow() ?*Window {
     return null;
 }
 
-fn panmuxNotifyCallback(cookie: ?*anyopaque, notify: panmux_ipc.OwnedNotify) void {
+fn getPanmuxWindow(params: panmux_ipc.Params) ?*Window {
+    if (!panmux_ipc.hasExplicitTarget(params)) {
+        return getActiveWindow();
+    }
+
+    const list = gtk.Window.listToplevels();
+    defer list.free();
+
+    var current: ?*glib.List = list;
+    while (current) |node| : (current = node.f_next) {
+        const data = node.f_data orelse continue;
+        const gtk_window: *gtk.Window = @ptrCast(@alignCast(data));
+        if (gtk_window.as(gtk.Widget).isVisible() == 0) continue;
+        const window = gobject.ext.cast(Window, gtk_window) orelse continue;
+        if (window.panmuxHasTarget(params)) return window;
+    }
+
+    return null;
+}
+
+fn panmuxRequestCallback(cookie: ?*anyopaque, request: panmux_ipc.OwnedRequest) void {
     const self: *Application = @ptrCast(@alignCast(cookie orelse {
-        var owned = notify;
+        var owned = request;
         owned.deinit(std.heap.c_allocator);
         return;
     }));
 
-    const pending = std.heap.c_allocator.create(PendingPanmuxNotify) catch {
-        var owned = notify;
+    const pending = std.heap.c_allocator.create(PendingPanmuxRequest) catch {
+        var owned = request;
         owned.deinit(std.heap.c_allocator);
         return;
     };
-    pending.* = .{ .app = self, .notify = notify };
-    _ = glib.idleAdd(panmuxIdleNotify, pending);
+    pending.* = .{ .app = self, .request = request };
+    _ = glib.idleAdd(panmuxIdleRequest, pending);
 }
 
-const PendingPanmuxNotify = struct {
+const PendingPanmuxRequest = struct {
     app: *Application,
-    notify: panmux_ipc.OwnedNotify,
+    request: panmux_ipc.OwnedRequest,
 };
 
-fn panmuxIdleNotify(ud: ?*anyopaque) callconv(.c) c_int {
-    const pending: *PendingPanmuxNotify = @ptrCast(@alignCast(ud orelse return 0));
+fn panmuxIdleRequest(ud: ?*anyopaque) callconv(.c) c_int {
+    const pending: *PendingPanmuxRequest = @ptrCast(@alignCast(ud orelse return 0));
     defer {
-        pending.notify.deinit(std.heap.c_allocator);
+        pending.request.deinit(std.heap.c_allocator);
         std.heap.c_allocator.destroy(pending);
     }
 
-    handlePanmuxNotify(pending.app, pending.notify.borrowed());
+    handlePanmuxRequest(pending.app, pending.request.borrowed());
     return 0;
 }
 
-fn handlePanmuxNotify(_: *Application, notify: panmux_ipc.NotifyParams) void {
-    const window = getActiveWindow() orelse return;
-    log.info(
-        "panmux notify state={s} title={s}",
-        .{ notify.state orelse "", notify.title orelse "" },
-    );
-    window.panmuxNotify(notify);
+fn handlePanmuxRequest(_: *Application, request: panmux_ipc.Request) void {
+    const window = getPanmuxWindow(request.params) orelse {
+        log.warn("panmux request target not found method={s}", .{request.method});
+        return;
+    };
+
+    if (std.mem.eql(u8, request.method, "notify")) {
+        log.info(
+            "panmux notify state={s} title={s}",
+            .{ request.params.state orelse "", request.params.title orelse "" },
+        );
+        _ = window.panmuxNotify(request.params);
+        return;
+    }
+
+    if (std.mem.eql(u8, request.method, "set-status")) {
+        log.info(
+            "panmux set-status state={s} title={s}",
+            .{ request.params.state orelse "", request.params.title orelse "" },
+        );
+        _ = window.panmuxSetStatus(request.params);
+        return;
+    }
+
+    if (std.mem.eql(u8, request.method, "clear-status")) {
+        log.info("panmux clear-status", .{});
+        _ = window.panmuxClearStatus(request.params);
+        return;
+    }
+
+    log.warn("panmux unsupported method={s}", .{request.method});
 }
 
 const Action = struct {

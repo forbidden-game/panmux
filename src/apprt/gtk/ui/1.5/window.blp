@@ -260,12 +260,53 @@ template $GhosttyWindow: Adw.ApplicationWindow {
                         Gtk.Box {
                           halign: end;
                           hexpand: false;
+                          orientation: vertical;
+                          spacing: 6;
                           valign: center;
-                          visible: bind template.item as <Adw.TabPage>.needs-attention;
 
-                          styles [
-                            "panmux-sidebar-dot",
-                          ]
+                          Gtk.Box {
+                            halign: end;
+                            orientation: horizontal;
+                            spacing: 4;
+                            valign: center;
+                            visible: bind $sidebar_status_visible(template.item as <Adw.TabPage>.keyword, template.item as <Adw.TabPage>.loading, template.item as <Adw.TabPage>.indicator-icon) as <bool>;
+
+                            styles [
+                              "panmux-sidebar-pill",
+                            ]
+
+                            Gtk.Spinner {
+                              spinning: bind template.item as <Adw.TabPage>.loading;
+                              visible: bind template.item as <Adw.TabPage>.loading;
+                            }
+
+                            Gtk.Image {
+                              gicon: bind template.item as <Adw.TabPage>.indicator-icon;
+                              visible: bind $sidebar_indicator_visible(template.item as <Adw.TabPage>.indicator-icon) as <bool>;
+                            }
+
+                            Gtk.Label {
+                              label: bind $sidebar_status(template.item as <Adw.TabPage>.keyword) as <string>;
+                              visible: bind $sidebar_status_text_visible(template.item as <Adw.TabPage>.keyword) as <bool>;
+                              wrap: false;
+
+                              styles [
+                                "caption",
+                                "panmux-sidebar-status",
+                              ]
+                            }
+                          }
+
+                          Gtk.Box {
+                            halign: end;
+                            hexpand: false;
+                            valign: center;
+                            visible: bind template.item as <Adw.TabPage>.needs-attention;
+
+                            styles [
+                              "panmux-sidebar-dot",
+                            ]
+                          }
                         }
                       };
 

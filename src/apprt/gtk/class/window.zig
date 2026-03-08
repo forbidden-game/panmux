@@ -730,33 +730,177 @@ pub const Window = extern struct {
         action.setEnabled(@intFromBool(has_selection));
     }
 
-    pub fn panmuxNotify(self: *Self, notify: panmux_ipc.NotifyParams) void {
-        const priv = self.private();
-        const page = page: {
-            if (notify.tab_index) |tab_index| {
-                if (tab_index == 0) return;
-                const idx: c_int = @intCast(tab_index - 1);
-                if (idx < 0 or idx >= priv.tab_view.getNPages()) return;
-                break :page priv.tab_view.getNthPage(idx);
-            }
-            break :page priv.tab_view.getSelectedPage() orelse return;
-        };
+    pub fn panmuxHasTarget(self: *Self, params: panmux_ipc.Params) bool {
+        return self.resolvePanmuxPage(params) != null;
+    }
 
-        const selected = page.getSelected() != 0;
-        const active = self.as(gtk.Window).isActive() != 0;
-        const state = notify.state orelse "";
-        if (!selected and !std.mem.eql(u8, state, "running")) {
+    pub fn panmuxNotify(self: *Self, params: panmux_ipc.Params) bool {
+        const page = self.resolvePanmuxPage(params) orelse return false;
+        self.applyPanmuxStatus(page, params);
+
+        const foreground = page.getSelected() != 0 and self.as(gtk.Window).isActive() != 0;
+        const state = params.state orelse "";
+        if (!foreground and !std.mem.eql(u8, state, "running")) {
             page.setNeedsAttention(@intFromBool(true));
         }
 
-        if (selected and active) {
-            self.addToast(panmuxToastMessage(notify));
+        if (foreground) {
+            self.addToast(panmuxToastMessage(params));
         }
+
+        return true;
     }
 
-    fn panmuxToastMessage(notify: panmux_ipc.NotifyParams) [*:0]const u8 {
-        const title = notify.title orelse notify.state orelse "Panmux";
-        const body = notify.body orelse "";
+    pub fn panmuxSetStatus(self: *Self, params: panmux_ipc.Params) bool {
+        const page = self.resolvePanmuxPage(params) orelse return false;
+        self.applyPanmuxStatus(page, params);
+        return true;
+    }
+
+    pub fn panmuxClearStatus(self: *Self, params: panmux_ipc.Params) bool {
+        const page = self.resolvePanmuxPage(params) orelse return false;
+        self.clearPanmuxStatus(page);
+        return true;
+    }
+
+    fn resolvePanmuxPage(self: *Self, params: panmux_ipc.Params) ?*adw.TabPage {
+        const priv = self.private();
+
+        if (params.tab_index) |tab_index| {
+            if (tab_index == 0) return null;
+            const idx: c_int = @intCast(tab_index - 1);
+            if (idx < 0 or idx >= priv.tab_view.getNPages()) return null;
+            const page = priv.tab_view.getNthPage(idx);
+            if ((params.tab_id != null or params.surface_id != null) and !pageMatchesPanmuxTarget(page, params)) {
+                return null;
+            }
+            return page;
+        }
+
+        if (params.tab_id != null or params.surface_id != null) {
+            const n_pages = priv.tab_view.getNPages();
+            var i: c_int = 0;
+            while (i < n_pages) : (i += 1) {
+                const page = priv.tab_view.getNthPage(i);
+                if (pageMatchesPanmuxTarget(page, params)) return page;
+            }
+            return null;
+        }
+
+        return priv.tab_view.getSelectedPage();
+    }
+
+    fn pageMatchesPanmuxTarget(page: *adw.TabPage, params: panmux_ipc.Params) bool {
+        const child = page.getChild();
+        const tab = gobject.ext.cast(Tab, child) orelse return false;
+
+        if (params.tab_id) |tab_id| {
+            if (!ptrIdMatches(tab, tab_id)) return false;
+        }
+
+        if (params.surface_id) |surface_id| {
+            const tree = tab.getSurfaceTree() orelse return false;
+            if (!treeHasSurfaceId(tree, surface_id)) return false;
+        }
+
+        return true;
+    }
+
+    fn treeHasSurfaceId(tree: *const Surface.Tree, expected: []const u8) bool {
+        var it = tree.iterator();
+        while (it.next()) |entry| {
+            if (ptrIdMatches(entry.view, expected)) return true;
+        }
+
+        return false;
+    }
+
+    fn ptrIdMatches(ptr: anytype, expected: []const u8) bool {
+        var buf: [32]u8 = undefined;
+        const actual = std.fmt.bufPrint(&buf, "{x}", .{@intFromPtr(ptr)}) catch return false;
+        return std.mem.eql(u8, actual, expected);
+    }
+
+    fn applyPanmuxStatus(self: *Self, page: *adw.TabPage, params: panmux_ipc.Params) void {
+        _ = self;
+        const state = params.state orelse "";
+        const running = std.mem.eql(u8, state, "running");
+
+        page.setLoading(@intFromBool(running));
+        page.setKeyword(panmuxStatusKeyword(params));
+        page.setIndicatorTooltip(panmuxStatusTooltip(params));
+
+        if (running) {
+            page.setIndicatorIcon(null);
+            return;
+        }
+
+        const icon_name = panmuxIndicatorIconName(state) orelse {
+            page.setIndicatorIcon(null);
+            return;
+        };
+        const icon = gio.ThemedIcon.new(icon_name);
+        defer icon.unref();
+        page.setIndicatorIcon(icon.as(gio.Icon));
+    }
+
+    fn clearPanmuxStatus(self: *Self, page: *adw.TabPage) void {
+        _ = self;
+        page.setLoading(@intFromBool(false));
+        page.setIndicatorIcon(null);
+        page.setIndicatorTooltip("");
+        page.setKeyword("");
+        page.setNeedsAttention(@intFromBool(false));
+    }
+
+    fn panmuxIndicatorIconName(state: []const u8) ?[*:0]const u8 {
+        if (state.len == 0) return null;
+        if (std.mem.eql(u8, state, "done")) return "emblem-ok-symbolic";
+        if (std.mem.eql(u8, state, "error")) return "dialog-error-symbolic";
+        if (std.mem.eql(u8, state, "warn")) return "dialog-warning-symbolic";
+        if (std.mem.eql(u8, state, "warning")) return "dialog-warning-symbolic";
+        if (std.mem.eql(u8, state, "info")) return "dialog-information-symbolic";
+        return "emblem-system-symbolic";
+    }
+
+    fn panmuxStatusKeyword(params: panmux_ipc.Params) [*:0]const u8 {
+        const state = params.state orelse return "";
+        if (state.len == 0) return "";
+
+        var buf: [64]u8 = undefined;
+        return std.fmt.bufPrintZ(&buf, "{s}", .{state}) catch "";
+    }
+
+    fn panmuxStatusTooltip(params: panmux_ipc.Params) [*:0]const u8 {
+        const state = params.state orelse "";
+        const title = params.title orelse "";
+        const body = params.body orelse "";
+
+        var buf: [512]u8 = undefined;
+        if (state.len > 0 and title.len > 0 and body.len > 0) {
+            return std.fmt.bufPrintZ(&buf, "{s}: {s} — {s}", .{ state, title, body }) catch "";
+        }
+        if (state.len > 0 and title.len > 0) {
+            return std.fmt.bufPrintZ(&buf, "{s}: {s}", .{ state, title }) catch "";
+        }
+        if (title.len > 0 and body.len > 0) {
+            return std.fmt.bufPrintZ(&buf, "{s}: {s}", .{ title, body }) catch "";
+        }
+        if (body.len > 0) {
+            return std.fmt.bufPrintZ(&buf, "{s}", .{body}) catch "";
+        }
+        if (title.len > 0) {
+            return std.fmt.bufPrintZ(&buf, "{s}", .{title}) catch "";
+        }
+        if (state.len > 0) {
+            return std.fmt.bufPrintZ(&buf, "{s}", .{state}) catch "";
+        }
+        return "";
+    }
+
+    fn panmuxToastMessage(params: panmux_ipc.Params) [*:0]const u8 {
+        const title = params.title orelse params.state orelse "Panmux";
+        const body = params.body orelse "";
 
         var buf: [512]u8 = undefined;
         if (body.len > 0) {
@@ -1309,6 +1453,41 @@ pub const Window = extern struct {
         pos: c_uint,
     ) callconv(.c) c_int {
         return @intFromBool(pos < 9);
+    }
+
+    fn closureSidebarStatus(
+        _: *Self,
+        keyword_: ?[*:0]const u8,
+    ) callconv(.c) [*:0]const u8 {
+        const keyword = keyword_ orelse return glib.ext.dupeZ(u8, "");
+        return glib.ext.dupeZ(u8, std.mem.span(keyword));
+    }
+
+    fn closureSidebarStatusTextVisible(
+        _: *Self,
+        keyword_: ?[*:0]const u8,
+    ) callconv(.c) c_int {
+        const keyword = keyword_ orelse return 0;
+        return @intFromBool(std.mem.span(keyword).len > 0);
+    }
+
+    fn closureSidebarIndicatorVisible(
+        _: *Self,
+        icon: ?*gio.Icon,
+    ) callconv(.c) c_int {
+        return @intFromBool(icon != null);
+    }
+
+    fn closureSidebarStatusVisible(
+        _: *Self,
+        keyword_: ?[*:0]const u8,
+        loading: c_int,
+        icon: ?*gio.Icon,
+    ) callconv(.c) c_int {
+        if (loading != 0) return 1;
+        if (icon != null) return 1;
+        const keyword = keyword_ orelse return 0;
+        return @intFromBool(std.mem.span(keyword).len > 0);
     }
 
     //---------------------------------------------------------------
@@ -2221,6 +2400,10 @@ pub const Window = extern struct {
             class.bindTemplateCallback("sidebar_cwd", &closureSidebarCwd);
             class.bindTemplateCallback("sidebar_hint", &closureSidebarHint);
             class.bindTemplateCallback("sidebar_hint_visible", &closureSidebarHintVisible);
+            class.bindTemplateCallback("sidebar_indicator_visible", &closureSidebarIndicatorVisible);
+            class.bindTemplateCallback("sidebar_status", &closureSidebarStatus);
+            class.bindTemplateCallback("sidebar_status_text_visible", &closureSidebarStatusTextVisible);
+            class.bindTemplateCallback("sidebar_status_visible", &closureSidebarStatusVisible);
             class.bindTemplateCallback("titlebar_style_is_tabs", &closureTitlebarStyleIsTab);
             class.bindTemplateCallback("computed_subtitle", &closureSubtitle);
 
