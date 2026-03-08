@@ -161,9 +161,9 @@ template $GhosttyWindow: Adw.ApplicationWindow {
             can-focus: false;
             hexpand: false;
             hscrollbar-policy: never;
-            min-content-width: 220;
+            min-content-width: 240;
             vexpand: true;
-            width-request: 220;
+            width-request: 240;
 
             styles [
               "panmux-sidebar-scroller",
@@ -198,7 +198,7 @@ template $GhosttyWindow: Adw.ApplicationWindow {
                     Gtk.Overlay {
                       child: Gtk.Box {
                         orientation: horizontal;
-                        spacing: 10;
+                        spacing: 12;
                         margin-bottom: 10;
                         margin-end: 12;
                         margin-start: 12;
@@ -208,31 +208,18 @@ template $GhosttyWindow: Adw.ApplicationWindow {
                           "panmux-sidebar-row",
                         ]
 
-                        Gtk.Label {
-                          halign: start;
-                          valign: start;
-                          visible: bind $sidebar_hint_visible(template.position) as <bool>;
-                          wrap: false;
-
-                          styles [
-                            "caption",
-                            "dim-label",
-                            "panmux-sidebar-hint",
-                          ]
-
-                          label: bind $sidebar_hint(template.position) as <string>;
-                        }
-
                         Gtk.Box {
                           hexpand: true;
                           orientation: vertical;
                           spacing: 3;
+                          valign: center;
 
                           Gtk.Label {
                             ellipsize: end;
                             halign: start;
                             single-line-mode: true;
                             wrap: false;
+                            xalign: 0.0;
 
                             styles [
                               "panmux-sidebar-title",
@@ -242,10 +229,11 @@ template $GhosttyWindow: Adw.ApplicationWindow {
                           }
 
                           Gtk.Label {
-                            ellipsize: end;
+                            ellipsize: middle;
                             halign: start;
                             single-line-mode: true;
                             wrap: false;
+                            xalign: 0.0;
 
                             styles [
                               "caption",
@@ -260,9 +248,23 @@ template $GhosttyWindow: Adw.ApplicationWindow {
                         Gtk.Box {
                           halign: end;
                           hexpand: false;
-                          orientation: vertical;
+                          orientation: horizontal;
                           spacing: 6;
                           valign: center;
+
+                          Gtk.Label {
+                            halign: end;
+                            visible: bind $sidebar_hint_visible(template.position) as <bool>;
+                            wrap: false;
+
+                            styles [
+                              "caption",
+                              "dim-label",
+                              "panmux-sidebar-shortcut",
+                            ]
+
+                            label: bind $sidebar_hint(template.position) as <string>;
+                          }
 
                           Gtk.Box {
                             halign: end;

@@ -1548,15 +1548,9 @@ pub const Window = extern struct {
             if (std.mem.eql(u8, path, home_path)) {
                 return glib.ext.dupeZ(u8, "~");
             }
-            if (std.mem.startsWith(u8, path, home_path) and path.len > home_path.len and path[home_path.len] == '/') {
-                var buf: [std.fs.max_path_bytes]u8 = undefined;
-                const shortened = std.fmt.bufPrintZ(&buf, "~{s}", .{path[home_path.len..]}) catch
-                    return glib.ext.dupeZ(u8, path);
-                return glib.ext.dupeZ(u8, shortened);
-            }
         }
 
-        return glib.ext.dupeZ(u8, path);
+        return glib.ext.dupeZ(u8, std.fs.path.basename(path));
     }
 
     fn closureSidebarHint(
