@@ -9,6 +9,10 @@ const Result = @import("main.zig").Result;
 const MatchKind = @import("main.zig").MatchKind;
 
 pub const Config = opaque {
+    pub fn create() *Config {
+        return @ptrCast(c.FcConfigCreate());
+    }
+
     pub fn destroy(self: *Config) void {
         c.FcConfigDestroy(@ptrCast(self));
     }

@@ -454,13 +454,17 @@ test "fontconfig explicit emoji after teardown" {
 
     var def = def: {
         var fc: discovery.Fontconfig = .{
-            .fc_config = fontconfig.initLoadConfig(),
+            .fc_config = fontconfig.Config.create(),
         };
         defer fc.deinit();
         try testing.expect(fc.fc_config.appFontAddFile(font_path_z));
         try testing.expect(fc.fc_config.buildFonts());
 
-        var it = try fc.discover(alloc, .{ .codepoint = 0x1F600, .size = 12 });
+        var it = try fc.discover(alloc, .{
+            .family = "Noto Color Emoji",
+            .codepoint = 0x1F600,
+            .size = 12,
+        });
         defer it.deinit();
         const maybe_def = try it.next();
         try testing.expect(maybe_def != null);
