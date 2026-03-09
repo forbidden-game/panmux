@@ -9,6 +9,7 @@ const apprt = @import("../../apprt.zig");
 const configpkg = @import("../../config.zig");
 const Config = configpkg.Config;
 const CoreApp = @import("../../App.zig");
+const gresource = @import("build/gresource.zig");
 
 const Application = @import("class/application.zig").Application;
 const Surface = @import("Surface.zig");
@@ -23,14 +24,14 @@ pub const must_draw_from_app_thread = true;
 
 /// GTK application ID
 pub const application_id = switch (builtin.mode) {
-    .Debug, .ReleaseSafe => "com.mitchellh.ghostty-debug",
-    .ReleaseFast, .ReleaseSmall => "com.mitchellh.ghostty",
+    .Debug, .ReleaseSafe => "io.github.forbidden_game.panmux-debug",
+    .ReleaseFast, .ReleaseSmall => gresource.app_id,
 };
 
 /// GTK object path
 pub const object_path = switch (builtin.mode) {
-    .Debug, .ReleaseSafe => "/com/mitchellh/ghostty_debug",
-    .ReleaseFast, .ReleaseSmall => "/com/mitchellh/ghostty",
+    .Debug, .ReleaseSafe => "/io/github/forbidden_game/panmux_debug",
+    .ReleaseFast, .ReleaseSmall => gresource.prefix,
 };
 
 /// The GObject Application instance

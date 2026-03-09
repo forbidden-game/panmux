@@ -7,6 +7,8 @@ SOURCE_DIR=${PANMUX_SOURCE_DIR:-$PANMUX_REPO}
 INSTALL_ROOT=${PANMUX_INSTALL_ROOT:-$HOME/.local/opt/panmux}
 BIN_DIR=${PANMUX_BIN_DIR:-$HOME/.local/bin}
 APP_DIR=${PANMUX_APP_DIR:-$HOME/.local/share/applications}
+ICON_DIR=${PANMUX_ICON_DIR:-$HOME/.local/share/icons}
+APP_ID=io.github.forbidden_game.panmux
 
 if [[ ! -d "$SOURCE_DIR/.git" ]]; then
   echo "error: source dir does not look like a git repo: $SOURCE_DIR" >&2
@@ -19,11 +21,18 @@ if ! command -v zig >/dev/null 2>&1; then
 fi
 
 revision=$(git -C "$SOURCE_DIR" rev-parse --short HEAD)
+dirty=false
+if [[ -n "$(git -C "$SOURCE_DIR" status --short)" ]]; then
+  dirty=true
+fi
+if [[ "$dirty" == true ]]; then
+  revision="${revision}-dirty"
+fi
 prefix="$INSTALL_ROOT/$revision"
 current="$INSTALL_ROOT/current"
-mkdir -p "$INSTALL_ROOT" "$BIN_DIR" "$APP_DIR"
+mkdir -p "$INSTALL_ROOT" "$BIN_DIR" "$APP_DIR" "$ICON_DIR"
 
-if [[ ! -x "$prefix/bin/ghostty" ]]; then
+if [[ "$dirty" == true || ! -x "$prefix/bin/ghostty" ]]; then
   echo "==> building panmux release into $prefix"
   (
     cd "$SOURCE_DIR"
@@ -75,17 +84,26 @@ Type=Application
 Comment=Panmux terminal (Ghostty GTK fork)
 TryExec=$BIN_DIR/panmux
 Exec=$BIN_DIR/panmux
-Icon=com.mitchellh.ghostty
+Icon=$APP_ID
 Categories=System;TerminalEmulator;
 Keywords=terminal;tty;pty;panmux;
 StartupNotify=true
-StartupWMClass=com.mitchellh.ghostty
+StartupWMClass=$APP_ID
 Terminal=false
 X-GNOME-UsesNotifications=true
 EOF
 
+if [[ -d "$current/share/icons" ]]; then
+  mkdir -p "$ICON_DIR"
+  cp -a "$current/share/icons/." "$ICON_DIR/"
+fi
+
 if command -v update-desktop-database >/dev/null 2>&1; then
   update-desktop-database "$APP_DIR" >/dev/null 2>&1 || true
+fi
+
+if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+  gtk-update-icon-cache -f -t "$ICON_DIR/hicolor" >/dev/null 2>&1 || true
 fi
 
 echo "==> installed panmux"
@@ -95,3 +113,4 @@ echo "current:  $current"
 echo "binary:   $BIN_DIR/panmux"
 echo "ctl:      $BIN_DIR/panmuxctl"
 echo "desktop:  $APP_DIR/panmux.desktop"
+echo "icons:    $ICON_DIR"

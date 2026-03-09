@@ -51,7 +51,7 @@ start_bg ghostty-clients bash -lc '
   last=""
   while true; do
     now="$(date --iso-8601=ns)"
-    cur="$(hyprctl -j clients 2>/dev/null | jq -c "[.[] | select(.class == \"com.mitchellh.ghostty\") | {address, pid, title, focusHistoryID, workspace: .workspace.id}]" || true)"
+    cur="$(hyprctl -j clients 2>/dev/null | jq -c "[.[] | select(.class == \"io.github.forbidden_game.panmux\" or .class == \"com.mitchellh.ghostty\") | {address, pid, title, focusHistoryID, workspace: .workspace.id}]" || true)"
     if [[ "$cur" != "$last" ]]; then
       printf "=== %s ===\n%s\n\n" "$now" "$cur"
       last="$cur"

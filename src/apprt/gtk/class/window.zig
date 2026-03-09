@@ -2201,9 +2201,9 @@ pub const Window = extern struct {
         _: ?*glib.Variant,
         self: *Self,
     ) callconv(.c) void {
-        const name = "Ghostty";
-        const icon = "com.mitchellh.ghostty";
-        const website = "https://ghostty.org";
+        const name = "panmux";
+        const icon = gresource.app_id;
+        const website = "https://github.com/forbidden-game/panmux";
 
         if (adw_version.supportsDialogs()) {
             adw.showAboutDialog(
@@ -2211,13 +2211,13 @@ pub const Window = extern struct {
                 "application-name",
                 name,
                 "developer-name",
-                i18n._("Ghostty Developers"),
+                i18n._("panmux Developers"),
                 "application-icon",
                 icon,
                 "version",
                 build_config.version_string.ptr,
                 "issue-url",
-                "https://github.com/ghostty-org/ghostty/issues",
+                "https://github.com/forbidden-game/panmux/issues",
                 "website",
                 website,
                 @as(?*anyopaque, null),

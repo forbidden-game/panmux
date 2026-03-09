@@ -27,7 +27,7 @@ _ = gettext.translation(DOMAIN, locale_dir, fallback=True).gettext
 
 def open_in_ghostty_activated(_menu, paths):
     for path in paths:
-        cmd = ['ghostty', f'--working-directory={path}', '--gtk-single-instance=false']
+        cmd = ['panmux', f'--working-directory={path}', '--gtk-single-instance=false']
         Gio.Subprocess.new(cmd, Gio.SubprocessFlags.NONE)
 
 
@@ -50,8 +50,8 @@ def get_paths_to_open(files):
 def get_items_for_files(name, files):
     paths = get_paths_to_open(files)
     if paths:
-        item = Nautilus.MenuItem(name=name, label=_('Open in Ghostty'),
-            icon='com.mitchellh.ghostty')
+        item = Nautilus.MenuItem(name=name, label=_('Open in panmux'),
+            icon='io.github.forbidden_game.panmux')
         item.connect('activate', open_in_ghostty_activated, paths)
         return [item]
     else:
@@ -60,7 +60,7 @@ def get_items_for_files(name, files):
 
 class GhosttyMenuProvider(GObject.GObject, Nautilus.MenuProvider):
     def get_file_items(self, files):
-        return get_items_for_files('GhosttyNautilus::open_in_ghostty', files)
+        return get_items_for_files('PanmuxNautilus::open_in_panmux', files)
 
     def get_background_items(self, file):
-        return get_items_for_files('GhosttyNautilus::open_folder_in_ghostty', [file])
+        return get_items_for_files('PanmuxNautilus::open_folder_in_panmux', [file])
