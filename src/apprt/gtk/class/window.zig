@@ -745,7 +745,8 @@ pub const Window = extern struct {
         }
 
         if (foreground) {
-            self.addToast(panmuxToastMessage(params));
+            var toast_buf: [512]u8 = undefined;
+            self.addToast(panmuxToastMessage(params, &toast_buf));
         }
 
         return true;
@@ -784,7 +785,8 @@ pub const Window = extern struct {
         }
 
         if (foreground) {
-            self.addToast(panmuxToastMessage(params));
+            var toast_buf: [512]u8 = undefined;
+            self.addToast(panmuxToastMessage(params, &toast_buf));
         }
 
         return true;
@@ -986,10 +988,12 @@ pub const Window = extern struct {
         _ = self;
         const state = normalizedPanmuxState(params.state);
         const running = std.mem.eql(u8, state, "running");
+        var keyword_buf: [64]u8 = undefined;
+        var tooltip_buf: [512]u8 = undefined;
 
         page.setLoading(@intFromBool(running));
-        page.setKeyword(panmuxStatusKeyword(params));
-        page.setIndicatorTooltip(panmuxStatusTooltip(params));
+        page.setKeyword(panmuxStatusKeyword(params, &keyword_buf));
+        page.setIndicatorTooltip(panmuxStatusTooltip(params, &tooltip_buf));
 
         if (running) {
             page.setIndicatorIcon(null);
@@ -1023,12 +1027,10 @@ pub const Window = extern struct {
         return "emblem-system-symbolic";
     }
 
-    fn panmuxStatusKeyword(params: panmux_ipc.Params) [*:0]const u8 {
+    fn panmuxStatusKeyword(params: panmux_ipc.Params, buf: []u8) [*:0]const u8 {
         const state = storedPanmuxState(params);
         if (state.len == 0) return "";
-
-        var buf: [64]u8 = undefined;
-        return std.fmt.bufPrintZ(&buf, "{s}", .{state}) catch "";
+        return std.fmt.bufPrintZ(buf, "{s}", .{state}) catch "";
     }
 
     fn storedPanmuxState(params: panmux_ipc.Params) []const u8 {
@@ -1037,45 +1039,41 @@ pub const Window = extern struct {
         return state;
     }
 
-    fn panmuxStatusTooltip(params: panmux_ipc.Params) [*:0]const u8 {
+    fn panmuxStatusTooltip(params: panmux_ipc.Params, buf: []u8) [*:0]const u8 {
         const state = normalizedPanmuxState(params.state);
         const title = params.title orelse "";
         const body = params.body orelse "";
-
-        var buf: [512]u8 = undefined;
         if (state.len > 0 and title.len > 0 and body.len > 0) {
-            return std.fmt.bufPrintZ(&buf, "{s}: {s} — {s}", .{ state, title, body }) catch "";
+            return std.fmt.bufPrintZ(buf, "{s}: {s} — {s}", .{ state, title, body }) catch "";
         }
         if (state.len > 0 and title.len > 0) {
-            return std.fmt.bufPrintZ(&buf, "{s}: {s}", .{ state, title }) catch "";
+            return std.fmt.bufPrintZ(buf, "{s}: {s}", .{ state, title }) catch "";
         }
         if (title.len > 0 and body.len > 0) {
-            return std.fmt.bufPrintZ(&buf, "{s}: {s}", .{ title, body }) catch "";
+            return std.fmt.bufPrintZ(buf, "{s}: {s}", .{ title, body }) catch "";
         }
         if (body.len > 0) {
-            return std.fmt.bufPrintZ(&buf, "{s}", .{body}) catch "";
+            return std.fmt.bufPrintZ(buf, "{s}", .{body}) catch "";
         }
         if (title.len > 0) {
-            return std.fmt.bufPrintZ(&buf, "{s}", .{title}) catch "";
+            return std.fmt.bufPrintZ(buf, "{s}", .{title}) catch "";
         }
         if (state.len > 0) {
-            return std.fmt.bufPrintZ(&buf, "{s}", .{state}) catch "";
+            return std.fmt.bufPrintZ(buf, "{s}", .{state}) catch "";
         }
         return "";
     }
 
-    fn panmuxToastMessage(params: panmux_ipc.Params) [*:0]const u8 {
+    fn panmuxToastMessage(params: panmux_ipc.Params, buf: []u8) [*:0]const u8 {
         const state = normalizedPanmuxState(params.state);
         const title = params.title orelse if (state.len > 0) state else "Panmux";
         const body = params.body orelse "";
-
-        var buf: [512]u8 = undefined;
         if (body.len > 0) {
-            const msg = std.fmt.bufPrintZ(&buf, "{s}: {s}", .{ title, body }) catch return "Panmux";
+            const msg = std.fmt.bufPrintZ(buf, "{s}: {s}", .{ title, body }) catch return "Panmux";
             return msg;
         }
 
-        const msg = std.fmt.bufPrintZ(&buf, "{s}", .{title}) catch return "Panmux";
+        const msg = std.fmt.bufPrintZ(buf, "{s}", .{title}) catch return "Panmux";
         return msg;
     }
 
