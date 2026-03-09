@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const assert = @import("../../../quirks.zig").inlineAssert;
 const Allocator = std.mem.Allocator;
 const adw = @import("adw");
@@ -648,6 +649,8 @@ pub const Surface = extern struct {
         /// True if we auto-marked this surface's current Codex command
         /// as running via shell preexec detection.
         panmux_auto_codex_running: bool = false,
+        panmux_codex_probe_timer: ?c_uint = null,
+        panmux_codex_probe_attempts_remaining: u8 = 0,
 
         // Progress bar
         progress_bar_timer: ?c_uint = null,
@@ -1162,27 +1165,25 @@ pub const Surface = extern struct {
     }
 
     pub fn panmuxCommandStarted(self: *Self, is_codex: ?bool) void {
+        const priv = self.private();
+        self.cancelPanmuxCodexProbe();
+        priv.panmux_auto_codex_running = false;
+
         const codex = is_codex orelse title: {
             const title = self.getTitle() orelse break :title false;
             break :title panmux_codex.isCodexCommandText(title);
         };
-        if (!codex) return;
-
-        const window = ext.getAncestor(Window, self.as(gtk.Widget)) orelse return;
-        var surface_buf: [32]u8 = undefined;
-        const surface_id = std.fmt.bufPrint(&surface_buf, "{x}", .{@intFromPtr(self)}) catch return;
-        if (window.panmuxSetStatus(.{
-            .title = "Codex",
-            .body = "session running",
-            .state = "running",
-            .surface_id = surface_id,
-        })) {
-            self.private().panmux_auto_codex_running = true;
+        if (codex) {
+            self.markPanmuxCodexRunning();
+            return;
         }
+
+        self.schedulePanmuxCodexProbe();
     }
 
     pub fn panmuxCommandFinished(self: *Self, exit_code: ?u8) void {
         const priv = self.private();
+        self.cancelPanmuxCodexProbe();
         if (!priv.panmux_auto_codex_running) return;
         priv.panmux_auto_codex_running = false;
 
@@ -1203,6 +1204,159 @@ pub const Surface = extern struct {
     fn panmuxResumeInfo(self: *Self) void {
         const window = ext.getAncestor(Window, self.as(gtk.Widget)) orelse return;
         _ = window.panmuxResumeInfoSurface(self);
+    }
+
+    fn markPanmuxCodexRunning(self: *Self) void {
+        const window = ext.getAncestor(Window, self.as(gtk.Widget)) orelse return;
+        var surface_buf: [32]u8 = undefined;
+        const surface_id = std.fmt.bufPrint(&surface_buf, "{x}", .{@intFromPtr(self)}) catch return;
+        if (window.panmuxSetStatus(.{
+            .title = "Codex",
+            .body = "session running",
+            .state = "running",
+            .surface_id = surface_id,
+        })) {
+            self.private().panmux_auto_codex_running = true;
+        }
+    }
+
+    fn schedulePanmuxCodexProbe(self: *Self) void {
+        if (builtin.os.tag != .linux) return;
+        if (self.commandProcessPid() == null) return;
+
+        const priv = self.private();
+        priv.panmux_codex_probe_attempts_remaining = 15;
+        priv.panmux_codex_probe_timer = glib.timeoutAdd(
+            100,
+            panmuxCodexProbeTimer,
+            self,
+        );
+    }
+
+    fn cancelPanmuxCodexProbe(self: *Self) void {
+        const priv = self.private();
+        if (priv.panmux_codex_probe_timer) |timer| {
+            if (glib.Source.remove(timer) == 0) {
+                log.warn("unable to remove panmux Codex probe timer", .{});
+            }
+            priv.panmux_codex_probe_timer = null;
+        }
+        priv.panmux_codex_probe_attempts_remaining = 0;
+    }
+
+    fn panmuxCodexProbeTimer(ud: ?*anyopaque) callconv(.c) c_int {
+        const self: *Self = @ptrCast(@alignCast(ud orelse return @intFromBool(glib.SOURCE_REMOVE)));
+        const priv = self.private();
+
+        if (self.commandProcessTreeHasCodex()) {
+            priv.panmux_codex_probe_timer = null;
+            priv.panmux_codex_probe_attempts_remaining = 0;
+            self.markPanmuxCodexRunning();
+            return @intFromBool(glib.SOURCE_REMOVE);
+        }
+
+        if (priv.panmux_codex_probe_attempts_remaining <= 1) {
+            priv.panmux_codex_probe_timer = null;
+            priv.panmux_codex_probe_attempts_remaining = 0;
+            return @intFromBool(glib.SOURCE_REMOVE);
+        }
+
+        priv.panmux_codex_probe_attempts_remaining -= 1;
+        return @intFromBool(glib.SOURCE_CONTINUE);
+    }
+
+    fn commandProcessPid(self: *Self) ?u32 {
+        const surface = self.private().core_surface orelse return null;
+        return surface.commandProcessPid();
+    }
+
+    fn commandProcessTreeHasCodex(self: *Self) bool {
+        const root_pid = self.commandProcessPid() orelse return false;
+        return processTreeHasCodex(root_pid);
+    }
+
+    fn processTreeHasCodex(root_pid: u32) bool {
+        var stack: [128]u32 = undefined;
+        var stack_len: usize = 0;
+        stack[stack_len] = root_pid;
+        stack_len += 1;
+
+        while (stack_len > 0) {
+            stack_len -= 1;
+            const pid = stack[stack_len];
+            if (processPidHasCodexCommand(pid)) return true;
+            appendProcChildPids(pid, &stack, &stack_len);
+        }
+
+        return false;
+    }
+
+    fn processPidHasCodexCommand(pid: u32) bool {
+        var buf: [4096]u8 = undefined;
+        if (readProcArg0(pid, &buf)) |arg0| {
+            if (panmux_codex.isCodexCommandText(arg0)) return true;
+        }
+
+        if (readProcComm(pid, &buf)) |comm| {
+            if (panmux_codex.isCodexCommandText(comm)) return true;
+        }
+
+        return false;
+    }
+
+    fn readProcArg0(pid: u32, buf: []u8) ?[]const u8 {
+        var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const path = std.fmt.bufPrint(&path_buf, "/proc/{d}/cmdline", .{pid}) catch return null;
+        const file = std.fs.openFileAbsolute(path, .{}) catch return null;
+        defer file.close();
+
+        const len = file.readAll(buf) catch return null;
+        if (len == 0) return null;
+
+        const data = buf[0..len];
+        const end = std.mem.indexOfScalar(u8, data, 0) orelse data.len;
+        if (end == 0) return null;
+        return data[0..end];
+    }
+
+    fn readProcComm(pid: u32, buf: []u8) ?[]const u8 {
+        var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const path = std.fmt.bufPrint(&path_buf, "/proc/{d}/comm", .{pid}) catch return null;
+        const file = std.fs.openFileAbsolute(path, .{}) catch return null;
+        defer file.close();
+
+        const len = file.readAll(buf) catch return null;
+        if (len == 0) return null;
+        return std.mem.trimRight(u8, buf[0..len], "\n");
+    }
+
+    fn appendProcChildPids(
+        pid: u32,
+        stack: *[128]u32,
+        stack_len: *usize,
+    ) void {
+        var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const path = std.fmt.bufPrint(&path_buf, "/proc/{d}/task/{d}/children", .{ pid, pid }) catch return;
+        const file = std.fs.openFileAbsolute(path, .{}) catch return;
+        defer file.close();
+
+        var buf: [4096]u8 = undefined;
+        const len = file.readAll(&buf) catch return;
+        appendProcChildrenRaw(buf[0..len], stack, stack_len);
+    }
+
+    fn appendProcChildrenRaw(
+        raw: []const u8,
+        stack: *[128]u32,
+        stack_len: *usize,
+    ) void {
+        var it = std.mem.tokenizeAny(u8, raw, " \n\t");
+        while (it.next()) |token| {
+            const pid = std.fmt.parseInt(u32, token, 10) catch continue;
+            if (pid == 0 or stack_len.* >= stack.len) return;
+            stack[stack_len.*] = pid;
+            stack_len.* += 1;
+        }
     }
 
     /// Get the readonly state from the core surface.
@@ -1914,6 +2068,13 @@ pub const Surface = extern struct {
                 log.warn("unable to remove progress bar timer", .{});
             }
             priv.progress_bar_timer = null;
+        }
+
+        if (priv.panmux_codex_probe_timer) |timer| {
+            if (glib.Source.remove(timer) == 0) {
+                log.warn("unable to remove panmux Codex probe timer", .{});
+            }
+            priv.panmux_codex_probe_timer = null;
         }
 
         if (priv.idle_rechild) |v| {
@@ -4150,4 +4311,16 @@ test "computeFraction" {
     try std.testing.expectEqual(1.0, computeFraction(255));
     try std.testing.expectEqual(0.0, computeFraction(0));
     try std.testing.expectEqual(0.5, computeFraction(50));
+}
+
+test "appendProcChildrenRaw parses whitespace-separated pids" {
+    var stack: [128]u32 = undefined;
+    var stack_len: usize = 0;
+    Surface.appendProcChildrenRaw("123 456\n789\t42", &stack, &stack_len);
+
+    try std.testing.expectEqual(@as(usize, 4), stack_len);
+    try std.testing.expectEqual(@as(u32, 123), stack[0]);
+    try std.testing.expectEqual(@as(u32, 456), stack[1]);
+    try std.testing.expectEqual(@as(u32, 789), stack[2]);
+    try std.testing.expectEqual(@as(u32, 42), stack[3]);
 }

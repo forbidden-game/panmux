@@ -101,6 +101,16 @@ pub fn threadEnter(
     };
     errdefer self.subprocess.stop();
 
+    const subprocess_pid: ?u32 = if (self.subprocess.process) |v| switch (v) {
+        .fork_exec => |cmd| @intCast(cmd.pid orelse return error.ProcessNoPid),
+        .flatpak => null,
+    } else return error.ProcessNotStarted;
+    if (subprocess_pid) |pid| {
+        _ = io.surface_mailbox.push(.{
+            .command_process_pid = pid,
+        }, .{ .forever = {} });
+    }
+
     // Watcher to detect subprocess exit
     var process: ?xev.Process = if (self.subprocess.process) |v| switch (v) {
         .fork_exec => |cmd| try xev.Process.init(

@@ -141,6 +141,9 @@ config_conditional_state: configpkg.ConditionalState,
 /// This is used to determine if we need to confirm, hold open, etc.
 child_exited: bool = false,
 
+/// PID of the subprocess backing this terminal surface, if known.
+command_process_pid: ?u32 = null,
+
 /// We maintain our focus state and assume we're focused by default.
 /// If we're not initially focused then apprts can call focusCallback
 /// to let us know.
@@ -1059,6 +1062,10 @@ pub fn handleMessage(self: *Surface, msg: Message) !void {
 
         .close => self.close(),
 
+        .command_process_pid => |pid| {
+            self.command_process_pid = pid;
+        },
+
         .child_exited => |v| self.childExited(v),
 
         .desktop_notification => |notification| {
@@ -1209,6 +1216,7 @@ fn selectionScrollTick(self: *Surface) !void {
 fn childExited(self: *Surface, info: apprt.surface.Message.ChildExited) void {
     // Mark our flag that we exited immediately
     self.child_exited = true;
+    self.command_process_pid = null;
 
     // If our runtime was below some threshold then we assume that this
     // was an abnormal exit and we show an error message.
@@ -1504,6 +1512,10 @@ fn searchCallback_(
         // Unhandled, so far.
         .complete => {},
     }
+}
+
+pub fn commandProcessPid(self: *const Surface) ?u32 {
+    return self.command_process_pid;
 }
 
 /// Call this when modifiers change. This is safe to call even if modifiers

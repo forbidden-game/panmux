@@ -51,6 +51,9 @@ pub const Message = union(enum) {
     /// command are given in the `ChildExited` struct.
     child_exited: ChildExited,
 
+    /// The top-level subprocess backing this terminal surface.
+    command_process_pid: u32,
+
     /// Show a desktop notification.
     desktop_notification: struct {
         /// Desktop notification title.
