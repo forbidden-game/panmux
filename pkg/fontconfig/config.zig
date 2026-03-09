@@ -13,6 +13,14 @@ pub const Config = opaque {
         c.FcConfigDestroy(@ptrCast(self));
     }
 
+    pub fn appFontAddFile(self: *Config, path: [:0]const u8) bool {
+        return c.FcConfigAppFontAddFile(self.cval(), path.ptr) == c.FcTrue;
+    }
+
+    pub fn buildFonts(self: *Config) bool {
+        return c.FcConfigBuildFonts(self.cval()) == c.FcTrue;
+    }
+
     pub fn fontList(self: *Config, pat: *Pattern, os: *ObjectSet) *FontSet {
         return @ptrCast(c.FcFontList(self.cval(), pat.cval(), os.cval()));
     }

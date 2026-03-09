@@ -435,35 +435,38 @@ test "fontconfig" {
 test "fontconfig explicit emoji after teardown" {
     if (options.backend != .fontconfig_freetype) return error.SkipZigTest;
 
+    const discovery = @import("main.zig").discovery;
+    const embedded = @import("embedded.zig");
     const testing = std.testing;
-    var pattern = fontconfig.Pattern.create();
-    errdefer pattern.destroy();
+    const alloc = testing.allocator;
 
-    var charset = fontconfig.CharSet.create();
-    errdefer charset.destroy();
-    try testing.expect(charset.addChar(0x1F600));
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.writeFile(.{
+        .sub_path = "NotoColorEmoji.ttf",
+        .data = embedded.emoji,
+    });
 
-    var langset = fontconfig.LangSet.create();
-    errdefer langset.destroy();
-    try testing.expect(langset.addLang("und-zsye"));
+    const font_path = try tmp_dir.dir.realpathAlloc(alloc, "NotoColorEmoji.ttf");
+    defer alloc.free(font_path);
+    const font_path_z = try alloc.dupeZ(u8, font_path);
+    defer alloc.free(font_path_z);
 
-    const copied_charset = charset.copy() orelse return error.OutOfMemory;
-    errdefer copied_charset.destroy();
-    const copied_langset = langset.copy() orelse return error.OutOfMemory;
-    errdefer copied_langset.destroy();
+    var def = def: {
+        var fc: discovery.Fontconfig = .{
+            .fc_config = fontconfig.initLoadConfig(),
+        };
+        defer fc.deinit();
+        try testing.expect(fc.fc_config.appFontAddFile(font_path_z));
+        try testing.expect(fc.fc_config.buildFonts());
 
-    var def: DeferredFace = .{
-        .fc = .{
-            .pattern = pattern,
-            .charset = copied_charset,
-            .langset = copied_langset,
-            .variations = &.{},
-        },
+        var it = try fc.discover(alloc, .{ .codepoint = 0x1F600, .size = 12 });
+        defer it.deinit();
+        const maybe_def = try it.next();
+        try testing.expect(maybe_def != null);
+        break :def maybe_def.?;
     };
     defer def.deinit();
-
-    charset.destroy();
-    langset.destroy();
 
     try testing.expect(def.hasCodepoint(0x1F600, .emoji));
 }
