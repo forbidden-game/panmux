@@ -435,18 +435,35 @@ test "fontconfig" {
 test "fontconfig explicit emoji after teardown" {
     if (options.backend != .fontconfig_freetype) return error.SkipZigTest;
 
-    const discovery = @import("main.zig").discovery;
     const testing = std.testing;
-    const alloc = testing.allocator;
+    var pattern = fontconfig.Pattern.create();
+    errdefer pattern.destroy();
 
-    var def = def: {
-        var fc = discovery.Fontconfig.init();
-        defer fc.deinit();
-        var it = try fc.discover(alloc, .{ .codepoint = 0x1F600, .size = 12 });
-        defer it.deinit();
-        break :def (try it.next()).?;
+    var charset = fontconfig.CharSet.create();
+    errdefer charset.destroy();
+    try testing.expect(charset.addChar(0x1F600));
+
+    var langset = fontconfig.LangSet.create();
+    errdefer langset.destroy();
+    try testing.expect(langset.addLang("und-zsye"));
+
+    const copied_charset = charset.copy() orelse return error.OutOfMemory;
+    errdefer copied_charset.destroy();
+    const copied_langset = langset.copy() orelse return error.OutOfMemory;
+    errdefer copied_langset.destroy();
+
+    var def: DeferredFace = .{
+        .fc = .{
+            .pattern = pattern,
+            .charset = copied_charset,
+            .langset = copied_langset,
+            .variations = &.{},
+        },
     };
     defer def.deinit();
+
+    charset.destroy();
+    langset.destroy();
 
     try testing.expect(def.hasCodepoint(0x1F600, .emoji));
 }
