@@ -215,7 +215,7 @@ function __ghostty_setup --on-event fish_prompt -d "Setup ghostty integration"
 
     function __ghostty_mark_output_start --on-event fish_preexec
         set --global __ghostty_prompt_state pre-exec
-        echo -en "\e]133;C\a"
+        printf "\e]133;C;cmdline_url=%s\a" (string escape --style=url -- "$argv[1]")
     end
 
     function __ghostty_mark_output_end --on-event fish_postexec

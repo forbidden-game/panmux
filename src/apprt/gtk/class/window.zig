@@ -34,6 +34,8 @@ const WeakRef = @import("../weak_ref.zig").WeakRef;
 
 const log = std.log.scoped(.gtk_ghostty_window);
 
+const resumable_codex_turn_complete_state = "codex-turn-complete";
+
 pub const Window = extern struct {
     const Self = @This();
     parent_instance: Parent,
@@ -819,7 +821,7 @@ pub const Window = extern struct {
     pub fn panmuxStateForSurface(self: *Self, surface: *Surface) ?[]const u8 {
         const tab = ext.getAncestor(Tab, surface.as(gtk.Widget)) orelse return null;
         const page = self.private().tab_view.getPage(tab.as(gtk.Widget));
-        return keywordOrNull(page.getKeyword());
+        return publicPanmuxState(keywordOrNull(page.getKeyword()));
     }
 
     pub fn panmuxResumeInfoSurface(self: *Self, surface: *Surface) bool {
@@ -830,7 +832,7 @@ pub const Window = extern struct {
 
     fn panmuxResumeInfoPage(self: *Self, page: *adw.TabPage) bool {
         const state = keywordOrNull(page.getKeyword()) orelse return false;
-        if (!std.mem.eql(u8, state, "info")) return false;
+        if (!std.mem.eql(u8, state, resumable_codex_turn_complete_state)) return false;
 
         self.applyPanmuxStatus(page, .{
             .title = "Codex",
@@ -879,7 +881,7 @@ pub const Window = extern struct {
         const tab = gobject.ext.cast(Tab, child) orelse return error.InvalidTabPage;
         const surface = tab.getActiveSurface();
         const pwd = if (surface) |v| v.getPwd() else null;
-        const state = keywordOrNull(page.getKeyword());
+        const state = publicPanmuxState(keywordOrNull(page.getKeyword()));
 
         var info = panmux_ipc.OwnedTabInfo{
             .index = index,
@@ -905,8 +907,17 @@ pub const Window = extern struct {
 
     fn normalizedPanmuxState(state: ?[]const u8) []const u8 {
         const value = state orelse return "";
-        if (std.mem.eql(u8, value, "done")) return "info";
+        if (std.mem.eql(u8, value, "done") or
+            std.mem.eql(u8, value, resumable_codex_turn_complete_state))
+        {
+            return "info";
+        }
         return value;
+    }
+
+    fn publicPanmuxState(state: ?[]const u8) ?[]const u8 {
+        const value = state orelse return null;
+        return normalizedPanmuxState(value);
     }
 
     fn trimAsciiWhitespace(value: []const u8) []const u8 {
@@ -1017,11 +1028,24 @@ pub const Window = extern struct {
     }
 
     fn panmuxStatusKeyword(params: panmux_ipc.Params) [*:0]const u8 {
-        const state = normalizedPanmuxState(params.state);
+        const state = storedPanmuxState(params);
         if (state.len == 0) return "";
 
         var buf: [64]u8 = undefined;
         return std.fmt.bufPrintZ(&buf, "{s}", .{state}) catch "";
+    }
+
+    fn storedPanmuxState(params: panmux_ipc.Params) []const u8 {
+        const state = normalizedPanmuxState(params.state);
+        if (state.len == 0) return "";
+        if (isResumableCodexTurnComplete(params)) return resumable_codex_turn_complete_state;
+        return state;
+    }
+
+    fn isResumableCodexTurnComplete(params: panmux_ipc.Params) bool {
+        if (!std.mem.eql(u8, normalizedPanmuxState(params.state), "info")) return false;
+        if (!std.mem.eql(u8, params.title orelse "", "Codex")) return false;
+        return std.mem.eql(u8, params.body orelse "", "turn complete");
     }
 
     fn panmuxStatusTooltip(params: panmux_ipc.Params) [*:0]const u8 {
@@ -2566,3 +2590,20 @@ pub const Window = extern struct {
         pub const bindTemplateCallback = C.Class.bindTemplateCallback;
     };
 };
+
+test "panmux status keyword only marks Codex turn completion as resumable" {
+    const resumable = Window.storedPanmuxState(.{
+        .title = "Codex",
+        .body = "turn complete",
+        .state = "info",
+    });
+    try std.testing.expectEqualStrings(resumable_codex_turn_complete_state, resumable);
+    try std.testing.expectEqualStrings("info", Window.normalizedPanmuxState(resumable));
+
+    const generic = Window.storedPanmuxState(.{
+        .title = "Codex",
+        .body = "session exited",
+        .state = "info",
+    });
+    try std.testing.expectEqualStrings("info", generic);
+}

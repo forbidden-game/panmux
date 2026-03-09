@@ -58,7 +58,10 @@ pub fn printfQDecode(writer: *std.Io.Writer, buf: []const u8) (std.Io.Writer.Err
                         try writer.writeByte(std.ascii.control_code.vt);
                         src += 2;
                     },
-                    else => return error.DecodeError,
+                    else => {
+                        try writer.writeByte(data[src + 1]);
+                        src += 2;
+                    },
                 }
             },
         }
@@ -89,9 +92,10 @@ test "printf_q 3" {
     var w: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer w.deinit();
 
-    const s: [:0]const u8 = "bobr\\dkurwa";
+    const s: [:0]const u8 = "bobr\\;kurwa";
 
-    try std.testing.expectError(error.DecodeError, printfQDecode(&w.writer, s));
+    try printfQDecode(&w.writer, s);
+    try std.testing.expectEqualStrings("bobr;kurwa", w.written());
 }
 
 test "printf_q 4" {

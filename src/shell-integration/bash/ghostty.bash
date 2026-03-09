@@ -254,7 +254,7 @@ function __ghostty_preexec() {
   fi
 
   # End of input, start of output.
-  builtin printf "\e]133;C;\a"
+  builtin printf "\e]133;C;cmdline=%q\a" "$cmd"
   _ghostty_executing=1
 }
 

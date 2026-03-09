@@ -92,7 +92,11 @@ pub const Message = union(enum) {
     progress_report: terminal.osc.Command.ProgressReport,
 
     /// A command has started in the shell, start a timer.
-    start_command,
+    start_command: struct {
+        /// Whether shell integration positively identified this as Codex.
+        /// Null means "unknown", so runtimes may fall back to other heuristics.
+        is_codex: ?bool = null,
+    },
 
     /// A command has finished in the shell, stop the timer and send out
     /// notifications as appropriate. The optional u8 is the exit code

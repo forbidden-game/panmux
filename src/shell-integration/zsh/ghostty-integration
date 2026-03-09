@@ -205,7 +205,7 @@ _ghostty_deferred_init() {
         # its preexec hook before us, we'll incorrectly mark its output as
         # belonging to the command (as if the user typed it into zle) rather
         # than command output.
-        builtin print -nu $_ghostty_fd '\e]133;C\a'
+        builtin print -rnu $_ghostty_fd -- $'\e]133;C;cmdline='"${(q)1}"$'\a'
         (( _ghostty_state = 1 ))
     }
 

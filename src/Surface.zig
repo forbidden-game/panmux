@@ -1110,10 +1110,10 @@ pub fn handleMessage(self: *Surface, msg: Message) !void {
             try self.selectionScrollTick();
         },
 
-        .start_command => {
+        .start_command => |v| {
             self.command_timer = try .now();
             if (comptime @hasDecl(@TypeOf(self.rt_surface.*), "panmuxCommandStarted")) {
-                self.rt_surface.panmuxCommandStarted();
+                self.rt_surface.panmuxCommandStarted(v.is_codex);
             }
         },
 

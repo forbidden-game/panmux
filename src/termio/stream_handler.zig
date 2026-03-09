@@ -7,6 +7,7 @@ const apprt = @import("../apprt.zig");
 const build_config = @import("../build_config.zig");
 const configpkg = @import("../config.zig");
 const internal_os = @import("../os/main.zig");
+const panmux_codex = @import("../panmux_codex.zig");
 const renderer = @import("../renderer.zig");
 const termio = @import("../termio.zig");
 const terminal = @import("../terminal/main.zig");
@@ -1072,7 +1073,11 @@ pub const StreamHandler = struct {
     ) !void {
         switch (cmd.action) {
             .end_input_start_output => {
-                self.surfaceMessageWriter(.start_command);
+                self.surfaceMessageWriter(.{
+                    .start_command = .{
+                        .is_codex = self.semanticPromptCommandIsCodex(cmd),
+                    },
+                });
             },
 
             .end_command => {
@@ -1100,6 +1105,20 @@ pub const StreamHandler = struct {
         // We do this last so failures are still processed correctly
         // above.
         try self.terminal.semanticPrompt(cmd);
+    }
+
+    fn semanticPromptCommandIsCodex(
+        self: *StreamHandler,
+        cmd: Stream.Action.SemanticPrompt,
+    ) ?bool {
+        if (cmd.readOption(.cmdline) == null and cmd.readOption(.cmdline_url) == null) {
+            return null;
+        }
+
+        var decoded: std.Io.Writer.Allocating = .init(self.alloc);
+        defer decoded.deinit();
+        cmd.writeCommandLine(&decoded.writer) catch return null;
+        return panmux_codex.isCodexCommandText(decoded.written());
     }
 
     fn reportPwd(self: *StreamHandler, url: []const u8) !void {

@@ -45,8 +45,8 @@ pub fn getTitle(self: *Self) ?[:0]const u8 {
     return self.surface.getTitle();
 }
 
-pub fn panmuxCommandStarted(self: *Self) void {
-    self.surface.panmuxCommandStarted();
+pub fn panmuxCommandStarted(self: *Self, is_codex: ?bool) void {
+    self.surface.panmuxCommandStarted(is_codex);
 }
 
 pub fn panmuxCommandFinished(self: *Self, exit_code: ?u8) void {
