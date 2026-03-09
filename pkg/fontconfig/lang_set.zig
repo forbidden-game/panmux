@@ -7,6 +7,10 @@ pub const LangSet = opaque {
         return @ptrCast(c.FcLangSetCreate());
     }
 
+    pub fn copy(self: *const LangSet) ?*LangSet {
+        return @ptrCast(c.FcLangSetCopy(self.cvalConst()));
+    }
+
     pub fn destroy(self: *LangSet) void {
         c.FcLangSetDestroy(self.cval());
     }
@@ -58,4 +62,20 @@ test "hasLang exact match" {
     // Test partial match: langset with "en-US" should return false for "en-GB"
     // (different territory, but we only want exact matches)
     try testing.expect(!fs.hasLang("en-GB"));
+}
+
+test "copy" {
+    const testing = std.testing;
+
+    var original = LangSet.create();
+    try testing.expect(original.addLang("und-zsye"));
+
+    var copied = original.copy() orelse return error.OutOfMemory;
+    defer copied.destroy();
+
+    try testing.expect(copied.hasLang("und-zsye"));
+
+    original.destroy();
+
+    try testing.expect(copied.hasLang("und-zsye"));
 }

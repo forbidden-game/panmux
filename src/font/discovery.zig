@@ -320,11 +320,19 @@ pub const Fontconfig = struct {
             // Increment after we return
             defer self.i += 1;
 
+            const charset = (try font_pattern.get(.charset, 0)).char_set.copy() orelse
+                return error.OutOfMemory;
+            errdefer charset.destroy();
+
+            const langset = (try font_pattern.get(.lang, 0)).lang_set.copy() orelse
+                return error.OutOfMemory;
+            errdefer langset.destroy();
+
             return DeferredFace{
                 .fc = .{
                     .pattern = font_pattern,
-                    .charset = (try font_pattern.get(.charset, 0)).char_set,
-                    .langset = (try font_pattern.get(.lang, 0)).lang_set,
+                    .charset = charset,
+                    .langset = langset,
                     .variations = self.variations,
                 },
             };

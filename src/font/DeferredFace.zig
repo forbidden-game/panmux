@@ -39,13 +39,15 @@ pub const Fontconfig = struct {
     /// Charset and Langset are used for quick lookup if a codepoint and
     /// presentation style are supported. They can be derived from pattern
     /// but are cached since they're frequently used.
-    charset: *const fontconfig.CharSet,
-    langset: *const fontconfig.LangSet,
+    charset: *fontconfig.CharSet,
+    langset: *fontconfig.LangSet,
 
     /// Variations to apply to this font.
     variations: []const font.face.Variation,
 
     pub fn deinit(self: *Fontconfig) void {
+        self.charset.destroy();
+        self.langset.destroy();
         self.pattern.destroy();
         self.* = undefined;
     }
@@ -428,6 +430,25 @@ test "fontconfig" {
     var face = try def.load(lib, .{ .size = .{ .points = 12 } });
     defer face.deinit();
     try testing.expect(face.glyphIndex(' ') != null);
+}
+
+test "fontconfig explicit emoji after teardown" {
+    if (options.backend != .fontconfig_freetype) return error.SkipZigTest;
+
+    const discovery = @import("main.zig").discovery;
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    var def = def: {
+        var fc = discovery.Fontconfig.init();
+        defer fc.deinit();
+        var it = try fc.discover(alloc, .{ .codepoint = 0x1F600, .size = 12 });
+        defer it.deinit();
+        break :def (try it.next()).?;
+    };
+    defer def.deinit();
+
+    try testing.expect(def.hasCodepoint(0x1F600, .emoji));
 }
 
 test "coretext" {
