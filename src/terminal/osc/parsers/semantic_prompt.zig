@@ -138,13 +138,9 @@ pub const Option = enum {
     ) ?self.Type() {
         var remaining = raw;
         while (remaining.len > 0) {
-            // Length of the next value is up to the `;` or the
-            // end of the string.
-            const len = std.mem.indexOfScalar(
-                u8,
-                remaining,
-                ';',
-            ) orelse remaining.len;
+            // Length of the next value is up to the next unescaped `;`
+            // outside of shell-style quotes, or the end of the string.
+            const len = nextOptionLen(remaining);
 
             // Grab our full value and move our cursor past the `;`
             const full = remaining[0..len];
@@ -214,6 +210,38 @@ pub const Option = enum {
         return null;
     }
 };
+
+fn nextOptionLen(raw: []const u8) usize {
+    var i: usize = 0;
+    var quote: ?u8 = null;
+    while (i < raw.len) : (i += 1) {
+        const c = raw[i];
+        if (quote) |q| {
+            if (c == q) {
+                quote = null;
+                continue;
+            }
+
+            if (q == '"' and c == '\\' and i + 1 < raw.len) {
+                i += 1;
+                continue;
+            }
+
+            continue;
+        }
+
+        switch (c) {
+            '\\' => {
+                if (i + 1 < raw.len) i += 1;
+            },
+            '\'', '"' => quote = c,
+            ';' => return i,
+            else => {},
+        }
+    }
+
+    return raw.len;
+}
 
 /// The `cl` option specifies what kind of cursor key sequences are handled
 /// by the application for click-to-move-cursor functionality.
@@ -549,6 +577,25 @@ test "OSC 133: end_input_start_output with cmdline 9" {
 
     try cmd.semantic_prompt.writeCommandLine(&w.writer);
     try testing.expectEqualStrings("", w.written());
+}
+
+test "OSC 133: end_input_start_output with cmdline escaped semicolon" {
+    const testing = std.testing;
+
+    var w: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer w.deinit();
+
+    var p: Parser = .init(null);
+    const input = "133;C;cmdline=codex\\;\\ echo\\ hi;aid=foo";
+    for (input) |ch| p.next(ch);
+
+    const cmd = p.end(null).?.*;
+    try testing.expect(cmd == .semantic_prompt);
+    try testing.expect(cmd.semantic_prompt.action == .end_input_start_output);
+    try testing.expectEqualStrings("foo", cmd.semantic_prompt.readOption(.aid).?);
+
+    try cmd.semantic_prompt.writeCommandLine(&w.writer);
+    try testing.expectEqualStrings("codex; echo hi", w.written());
 }
 
 test "OSC 133: end_input_start_output with cmdline_url 1" {
