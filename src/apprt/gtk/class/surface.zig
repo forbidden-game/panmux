@@ -1196,7 +1196,7 @@ pub const Surface = extern struct {
         _ = window.panmuxNotify(.{
             .title = "Codex",
             .body = if ((exit_code orelse 0) == 0) "session exited" else "session exited with error",
-            .state = if ((exit_code orelse 0) == 0) "done" else "error",
+            .state = if ((exit_code orelse 0) == 0) "_panmux_codex_done" else "error",
             .surface_id = surface_id,
         });
     }

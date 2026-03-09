@@ -33,6 +33,8 @@ const panmux_ipc = @import("../../../panmux_ipc.zig");
 const WeakRef = @import("../weak_ref.zig").WeakRef;
 
 const log = std.log.scoped(.gtk_ghostty_window);
+const panmux_codex_resume_state = "_panmux_codex_resume";
+const panmux_codex_done_state = "_panmux_codex_done";
 
 pub const Window = extern struct {
     const Self = @This();
@@ -827,12 +829,12 @@ pub const Window = extern struct {
     pub fn panmuxResumeInfoSurface(self: *Self, surface: *Surface) bool {
         const tab = ext.getAncestor(Tab, surface.as(gtk.Widget)) orelse return false;
         const page = self.private().tab_view.getPage(tab.as(gtk.Widget));
-        return self.panmuxResumeInfoPage(page);
+        return self.panmuxHandleCodexStatusInteraction(page);
     }
 
-    fn panmuxResumeInfoPage(self: *Self, page: *adw.TabPage) bool {
+    fn panmuxHandleCodexStatusInteraction(self: *Self, page: *adw.TabPage) bool {
         const stored_state = keywordOrNull(page.getKeyword()) orelse return false;
-        switch (panmuxResumeInfoAction(stored_state)) {
+        switch (panmuxCodexInteractionAction(stored_state)) {
             .none => return false,
             .clear => {
                 self.clearPanmuxStatus(page);
@@ -850,19 +852,37 @@ pub const Window = extern struct {
         return true;
     }
 
-    const PanmuxResumeInfoAction = enum {
+    fn panmuxHandleCodexStatusSelected(self: *Self, page: *adw.TabPage) bool {
+        const stored_state = keywordOrNull(page.getKeyword()) orelse return false;
+        switch (panmuxCodexSelectedAction(stored_state)) {
+            .none => return false,
+            .clear => unreachable,
+            .running => {},
+        }
+
+        self.applyPanmuxStatus(page, .{
+            .title = "Codex",
+            .body = "session running",
+            .state = "running",
+        });
+        page.setNeedsAttention(@intFromBool(false));
+        return true;
+    }
+
+    const PanmuxCodexAction = enum {
         none,
         clear,
         running,
     };
 
-    fn panmuxResumeInfoAction(stored_state: []const u8) PanmuxResumeInfoAction {
-        const state = publicPanmuxState(stored_state) orelse return .none;
-        if (!std.mem.eql(u8, state, "info")) return .none;
-        if (std.mem.eql(u8, stored_state, "done")) {
-            return .clear;
-        }
-        return .running;
+    fn panmuxCodexSelectedAction(stored_state: []const u8) PanmuxCodexAction {
+        if (std.mem.eql(u8, stored_state, panmux_codex_resume_state)) return .running;
+        return .none;
+    }
+
+    fn panmuxCodexInteractionAction(stored_state: []const u8) PanmuxCodexAction {
+        if (std.mem.eql(u8, stored_state, panmux_codex_done_state)) return .clear;
+        return panmuxCodexSelectedAction(stored_state);
     }
 
     fn resolvePanmuxPage(self: *Self, params: panmux_ipc.Params) ?*adw.TabPage {
@@ -929,6 +949,12 @@ pub const Window = extern struct {
 
     fn normalizedPanmuxState(state: ?[]const u8) []const u8 {
         const value = state orelse return "";
+        if (std.mem.eql(u8, value, panmux_codex_resume_state)) {
+            return "info";
+        }
+        if (std.mem.eql(u8, value, panmux_codex_done_state)) {
+            return "info";
+        }
         if (std.mem.eql(u8, value, "done")) {
             return "info";
         }
@@ -958,7 +984,7 @@ pub const Window = extern struct {
             return .{
                 .title = "Codex",
                 .body = "turn complete",
-                .state = "info",
+                .state = panmux_codex_resume_state,
             };
         }
 
@@ -1928,7 +1954,7 @@ pub const Window = extern struct {
         // If the tab was previously marked as needing attention
         // (e.g. due to a bell character), we now unmark that
         page.setNeedsAttention(@intFromBool(false));
-        _ = self.panmuxResumeInfoPage(page);
+        _ = self.panmuxHandleCodexStatusSelected(page);
         self.focusActiveSurface();
     }
 
@@ -2613,11 +2639,22 @@ test "panmux info states stay plain info" {
     });
     try std.testing.expectEqualStrings("done", exited);
     try std.testing.expectEqualStrings("info", Window.publicPanmuxState(exited).?);
+
+    try std.testing.expectEqualStrings("info", Window.publicPanmuxState(panmux_codex_resume_state).?);
+    try std.testing.expectEqualStrings("info", Window.publicPanmuxState(panmux_codex_done_state).?);
 }
 
-test "panmux resume info action clears done and resumes active info" {
-    try std.testing.expectEqual(.running, Window.panmuxResumeInfoAction("info"));
-    try std.testing.expectEqual(.clear, Window.panmuxResumeInfoAction("done"));
-    try std.testing.expectEqual(.none, Window.panmuxResumeInfoAction("error"));
-    try std.testing.expectEqual(.none, Window.panmuxResumeInfoAction(""));
+test "panmux codex actions stay private to codex markers" {
+    try std.testing.expectEqual(.running, Window.panmuxCodexSelectedAction(panmux_codex_resume_state));
+    try std.testing.expectEqual(.running, Window.panmuxCodexInteractionAction(panmux_codex_resume_state));
+    try std.testing.expectEqual(.clear, Window.panmuxCodexInteractionAction(panmux_codex_done_state));
+    try std.testing.expectEqual(.none, Window.panmuxCodexSelectedAction(panmux_codex_done_state));
+    try std.testing.expectEqual(.none, Window.panmuxCodexInteractionAction("info"));
+    try std.testing.expectEqual(.none, Window.panmuxCodexInteractionAction("done"));
+}
+
+test "panmux desktop notification keeps codex resume state private" {
+    const params = Window.desktopNotificationPanmuxParams("", "pong");
+    try std.testing.expectEqualStrings(panmux_codex_resume_state, params.state.?);
+    try std.testing.expectEqualStrings("info", Window.publicPanmuxState(params.state).?);
 }
