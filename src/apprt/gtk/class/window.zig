@@ -862,6 +862,13 @@ pub const Window = extern struct {
         return self.panmuxConsumeCodexInfoPage(page);
     }
 
+    pub fn panmuxClearStatusSurface(self: *Self, surface: *Surface) bool {
+        const tab = ext.getAncestor(Tab, surface.as(gtk.Widget)) orelse return false;
+        const page = self.private().tab_view.getPage(tab.as(gtk.Widget));
+        self.clearPanmuxStatus(page);
+        return true;
+    }
+
     fn panmuxConsumeCodexInfoPage(self: *Self, page: *adw.TabPage) bool {
         if (self.panmuxCodexPageState(page) != .info) return false;
         self.applyPanmuxStatus(page, .{

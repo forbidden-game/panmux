@@ -1189,11 +1189,7 @@ pub const Surface = extern struct {
         _ = exit_code;
 
         const window = ext.getAncestor(Window, self.as(gtk.Widget)) orelse return;
-        var surface_buf: [32]u8 = undefined;
-        const surface_id = std.fmt.bufPrint(&surface_buf, "{x}", .{@intFromPtr(self)}) catch return;
-        _ = window.panmuxClearStatus(.{
-            .surface_id = surface_id,
-        });
+        _ = window.panmuxClearStatusSurface(self);
     }
 
     fn panmuxResumeInfo(self: *Self) void {
