@@ -739,7 +739,7 @@ pub const Window = extern struct {
         self.applyPanmuxStatus(page, params);
 
         const foreground = page.getSelected() != 0 and self.as(gtk.Window).isActive() != 0;
-        const state = params.state orelse "";
+        const state = normalizedPanmuxState(params.state);
         if (!foreground and !std.mem.eql(u8, state, "running")) {
             page.setNeedsAttention(@intFromBool(true));
         }
@@ -778,7 +778,7 @@ pub const Window = extern struct {
         self.applyPanmuxStatus(page, params);
 
         const foreground = page.getSelected() != 0 and self.as(gtk.Window).isActive() != 0;
-        const state = params.state orelse "";
+        const state = normalizedPanmuxState(params.state);
         if (!foreground and !std.mem.eql(u8, state, "running")) {
             page.setNeedsAttention(@intFromBool(true));
         }
@@ -814,6 +814,31 @@ pub const Window = extern struct {
         }
 
         return tabs;
+    }
+
+    pub fn panmuxStateForSurface(self: *Self, surface: *Surface) ?[]const u8 {
+        const tab = ext.getAncestor(Tab, surface.as(gtk.Widget)) orelse return null;
+        const page = self.private().tab_view.getPage(tab.as(gtk.Widget));
+        return keywordOrNull(page.getKeyword());
+    }
+
+    pub fn panmuxResumeInfoSurface(self: *Self, surface: *Surface) bool {
+        const tab = ext.getAncestor(Tab, surface.as(gtk.Widget)) orelse return false;
+        const page = self.private().tab_view.getPage(tab.as(gtk.Widget));
+        return self.panmuxResumeInfoPage(page);
+    }
+
+    fn panmuxResumeInfoPage(self: *Self, page: *adw.TabPage) bool {
+        const state = keywordOrNull(page.getKeyword()) orelse return false;
+        if (!std.mem.eql(u8, state, "info")) return false;
+
+        self.applyPanmuxStatus(page, .{
+            .title = "Codex",
+            .body = "session running",
+            .state = "running",
+        });
+        page.setNeedsAttention(@intFromBool(false));
+        return true;
     }
 
     fn resolvePanmuxPage(self: *Self, params: panmux_ipc.Params) ?*adw.TabPage {
@@ -878,6 +903,12 @@ pub const Window = extern struct {
         return value;
     }
 
+    fn normalizedPanmuxState(state: ?[]const u8) []const u8 {
+        const value = state orelse return "";
+        if (std.mem.eql(u8, value, "done")) return "info";
+        return value;
+    }
+
     fn trimAsciiWhitespace(value: []const u8) []const u8 {
         var start_idx: usize = 0;
         var end_idx: usize = value.len;
@@ -896,7 +927,7 @@ pub const Window = extern struct {
             return .{
                 .title = "Codex",
                 .body = "turn complete",
-                .state = "done",
+                .state = "info",
             };
         }
 
@@ -946,7 +977,7 @@ pub const Window = extern struct {
 
     fn applyPanmuxStatus(self: *Self, page: *adw.TabPage, params: panmux_ipc.Params) void {
         _ = self;
-        const state = params.state orelse "";
+        const state = normalizedPanmuxState(params.state);
         const running = std.mem.eql(u8, state, "running");
 
         page.setLoading(@intFromBool(running));
@@ -978,7 +1009,6 @@ pub const Window = extern struct {
 
     fn panmuxIndicatorIconName(state: []const u8) ?[*:0]const u8 {
         if (state.len == 0) return null;
-        if (std.mem.eql(u8, state, "done")) return "emblem-ok-symbolic";
         if (std.mem.eql(u8, state, "error")) return "dialog-error-symbolic";
         if (std.mem.eql(u8, state, "warn")) return "dialog-warning-symbolic";
         if (std.mem.eql(u8, state, "warning")) return "dialog-warning-symbolic";
@@ -987,7 +1017,7 @@ pub const Window = extern struct {
     }
 
     fn panmuxStatusKeyword(params: panmux_ipc.Params) [*:0]const u8 {
-        const state = params.state orelse return "";
+        const state = normalizedPanmuxState(params.state);
         if (state.len == 0) return "";
 
         var buf: [64]u8 = undefined;
@@ -995,7 +1025,7 @@ pub const Window = extern struct {
     }
 
     fn panmuxStatusTooltip(params: panmux_ipc.Params) [*:0]const u8 {
-        const state = params.state orelse "";
+        const state = normalizedPanmuxState(params.state);
         const title = params.title orelse "";
         const body = params.body orelse "";
 
@@ -1022,7 +1052,8 @@ pub const Window = extern struct {
     }
 
     fn panmuxToastMessage(params: panmux_ipc.Params) [*:0]const u8 {
-        const title = params.title orelse params.state orelse "Panmux";
+        const state = normalizedPanmuxState(params.state);
+        const title = params.title orelse if (state.len > 0) state else "Panmux";
         const body = params.body orelse "";
 
         var buf: [512]u8 = undefined;
@@ -1866,6 +1897,7 @@ pub const Window = extern struct {
         // If the tab was previously marked as needing attention
         // (e.g. due to a bell character), we now unmark that
         page.setNeedsAttention(@intFromBool(false));
+        _ = self.panmuxResumeInfoPage(page);
         self.focusActiveSurface();
     }
 

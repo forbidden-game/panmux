@@ -644,6 +644,10 @@ pub const Surface = extern struct {
         /// True when the child has exited.
         child_exited: bool = false,
 
+        /// True if we auto-marked this surface's current Codex command
+        /// as running via shell preexec detection.
+        panmux_auto_codex_running: bool = false,
+
         // Progress bar
         progress_bar_timer: ?c_uint = null,
 
@@ -1156,11 +1160,145 @@ pub const Surface = extern struct {
         return true;
     }
 
+    pub fn panmuxCommandStarted(self: *Self) void {
+        const title = self.getTitle() orelse return;
+        if (!isCodexCommandTitle(title)) return;
+
+        const window = ext.getAncestor(Window, self.as(gtk.Widget)) orelse return;
+        var surface_buf: [32]u8 = undefined;
+        const surface_id = std.fmt.bufPrint(&surface_buf, "{x}", .{@intFromPtr(self)}) catch return;
+        if (window.panmuxSetStatus(.{
+            .title = "Codex",
+            .body = "session running",
+            .state = "running",
+            .surface_id = surface_id,
+        })) {
+            self.private().panmux_auto_codex_running = true;
+        }
+    }
+
+    pub fn panmuxCommandFinished(self: *Self, exit_code: ?u8) void {
+        const priv = self.private();
+        if (!priv.panmux_auto_codex_running) return;
+        priv.panmux_auto_codex_running = false;
+
+        const window = ext.getAncestor(Window, self.as(gtk.Widget)) orelse return;
+        const state = window.panmuxStateForSurface(self) orelse return;
+        if (!std.mem.eql(u8, state, "running")) return;
+
+        var surface_buf: [32]u8 = undefined;
+        const surface_id = std.fmt.bufPrint(&surface_buf, "{x}", .{@intFromPtr(self)}) catch return;
+        _ = window.panmuxNotify(.{
+            .title = "Codex",
+            .body = if ((exit_code orelse 0) == 0) "session exited" else "session exited with error",
+            .state = if ((exit_code orelse 0) == 0) "info" else "error",
+            .surface_id = surface_id,
+        });
+    }
+
+    fn panmuxResumeInfo(self: *Self) void {
+        const window = ext.getAncestor(Window, self.as(gtk.Widget)) orelse return;
+        _ = window.panmuxResumeInfoSurface(self);
+    }
+
     /// Get the readonly state from the core surface.
     pub fn getReadonly(self: *Self) bool {
         const priv: *Private = self.private();
         const surface = priv.core_surface orelse return false;
         return surface.readonly;
+    }
+
+    fn isCodexCommandTitle(title: []const u8) bool {
+        var idx: usize = 0;
+        var token_buf: [256]u8 = undefined;
+        var allow_wrapper_options = false;
+
+        while (nextCommandTitleWord(title, &idx, &token_buf)) |word| {
+            if (word.len == 0) continue;
+            if (isShellEnvAssignment(word)) continue;
+
+            if (std.mem.eql(u8, word, "command") or
+                std.mem.eql(u8, word, "env") or
+                std.mem.eql(u8, word, "exec"))
+            {
+                allow_wrapper_options = true;
+                continue;
+            }
+
+            if (allow_wrapper_options and word[0] == '-') continue;
+
+            const basename = std.fs.path.basename(word);
+            return std.mem.eql(u8, basename, "codex");
+        }
+
+        return false;
+    }
+
+    fn nextCommandTitleWord(
+        text: []const u8,
+        idx: *usize,
+        buf: *[256]u8,
+    ) ?[]const u8 {
+        var i = idx.*;
+        while (i < text.len and std.ascii.isWhitespace(text[i])) : (i += 1) {}
+        if (i >= text.len) {
+            idx.* = i;
+            return null;
+        }
+
+        var out: usize = 0;
+        var quote: ?u8 = null;
+        while (i < text.len) : (i += 1) {
+            const c = text[i];
+            if (quote == null and std.ascii.isWhitespace(c)) break;
+
+            if (quote) |q| {
+                if (c == q) {
+                    quote = null;
+                    continue;
+                }
+
+                if (q == '"' and c == '\\' and i + 1 < text.len) {
+                    i += 1;
+                    if (out < buf.len) buf[out] = text[i];
+                    out += 1;
+                    continue;
+                }
+            } else switch (c) {
+                '\'', '"' => {
+                    quote = c;
+                    continue;
+                },
+                '\\' => {
+                    if (i + 1 >= text.len) break;
+                    i += 1;
+                    if (out < buf.len) buf[out] = text[i];
+                    out += 1;
+                    continue;
+                },
+                else => {},
+            }
+
+            if (out < buf.len) buf[out] = c;
+            out += 1;
+        }
+
+        idx.* = i;
+        return buf[0..@min(out, buf.len)];
+    }
+
+    fn isShellEnvAssignment(word: []const u8) bool {
+        const eq_idx = std.mem.indexOfScalar(u8, word, '=') orelse return false;
+        if (eq_idx == 0) return false;
+
+        const head = word[0..eq_idx];
+        if (!(std.ascii.isAlphabetic(head[0]) or head[0] == '_')) return false;
+
+        for (head[1..]) |c| {
+            if (!(std.ascii.isAlphanumeric(c) or c == '_')) return false;
+        }
+
+        return true;
     }
 
     /// Notify anyone interested that the readonly status has changed.
@@ -1212,6 +1350,7 @@ pub const Surface = extern struct {
         const event = ec_key.as(gtk.EventController).getCurrentEvent() orelse return false;
         const key_event = gobject.ext.cast(gdk.KeyEvent, event) orelse return false;
         const priv = self.private();
+        if (action == .press) self.panmuxResumeInfo();
 
         // The block below is all related to input method handling. See the function
         // comment for some high level details and then the comments within
@@ -2779,6 +2918,7 @@ pub const Surface = extern struct {
         self: *Self,
     ) callconv(.c) void {
         const event = gesture.as(gtk.EventController).getCurrentEvent() orelse return;
+        self.panmuxResumeInfo();
 
         // Bell stops ringing if any mouse button is pressed.
         self.setBellRinging(false);
@@ -2917,6 +3057,7 @@ pub const Surface = extern struct {
         const is_cursor_still = @abs(priv.cursor_pos.x - pos.x) < 1 and
             @abs(priv.cursor_pos.y - pos.y) < 1;
         if (is_cursor_still) return;
+        self.panmuxResumeInfo();
 
         // If we don't have focus, and we want it, grab it.
         if (priv.config) |config| {
@@ -2986,6 +3127,7 @@ pub const Surface = extern struct {
     ) callconv(.c) c_int {
         const priv: *Private = self.private();
         const surface = priv.core_surface orelse return 0;
+        self.panmuxResumeInfo();
 
         // Multiply precision scrolls by 10 to get a better response from
         // touchpad scrolling
@@ -3018,6 +3160,7 @@ pub const Surface = extern struct {
         self: *Self,
     ) callconv(.c) c_int {
         const priv: *Private = self.private();
+        self.panmuxResumeInfo();
 
         switch (ec.getUnit()) {
             .surface => {},

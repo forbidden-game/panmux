@@ -45,6 +45,14 @@ pub fn getTitle(self: *Self) ?[:0]const u8 {
     return self.surface.getTitle();
 }
 
+pub fn panmuxCommandStarted(self: *Self) void {
+    self.surface.panmuxCommandStarted();
+}
+
+pub fn panmuxCommandFinished(self: *Self, exit_code: ?u8) void {
+    self.surface.panmuxCommandFinished(exit_code);
+}
+
 pub fn getContentScale(self: *const Self) !apprt.ContentScale {
     return self.surface.getContentScale();
 }

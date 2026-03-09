@@ -54,7 +54,7 @@ def state_for(payload: dict[str, Any]) -> str:
         return "error"
     if get_path(payload, "error") not in (None, False, ""):
         return "error"
-    return "done"
+    return "info"
 
 
 def title_for(payload: dict[str, Any]) -> str:

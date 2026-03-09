@@ -18,7 +18,7 @@ fi
 
 if command -v panmuxctl >/dev/null 2>&1; then
   if [[ $status -eq 0 ]]; then
-    panmuxctl notify --title "$TITLE" --body "$DONE_BODY" --state done >/dev/null 2>&1 || true
+    panmuxctl notify --title "$TITLE" --body "$DONE_BODY" --state info >/dev/null 2>&1 || true
   else
     panmuxctl notify --title "$TITLE" --body "$ERROR_BODY" --state error >/dev/null 2>&1 || true
   fi

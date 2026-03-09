@@ -1112,12 +1112,19 @@ pub fn handleMessage(self: *Surface, msg: Message) !void {
 
         .start_command => {
             self.command_timer = try .now();
+            if (comptime @hasDecl(@TypeOf(self.rt_surface.*), "panmuxCommandStarted")) {
+                self.rt_surface.panmuxCommandStarted();
+            }
         },
 
         .stop_command => |v| timer: {
             const end: std.time.Instant = try .now();
             const start = self.command_timer orelse break :timer;
             self.command_timer = null;
+
+            if (comptime @hasDecl(@TypeOf(self.rt_surface.*), "panmuxCommandFinished")) {
+                self.rt_surface.panmuxCommandFinished(v);
+            }
 
             const duration: Duration = .{ .duration = end.since(start) };
             log.debug("command took {f}", .{duration});

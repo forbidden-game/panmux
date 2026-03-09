@@ -214,9 +214,9 @@ label.resize-overlay {
 }
 
 .panmux-sidebar-attention {
-  background-color: rgba(192, 28, 40, 0.2);
+  background-color: rgba(46, 160, 67, 0.18);
   border-radius: 12px;
-  outline-color: rgba(192, 28, 40, 0.55);
+  outline-color: rgba(46, 160, 67, 0.48);
   outline-style: solid;
   outline-width: 1px;
 }
@@ -248,7 +248,7 @@ label.resize-overlay {
 }
 
 .panmux-sidebar-dot {
-  background-color: rgb(224, 27, 36);
+  background-color: rgb(46, 160, 67);
   border-radius: 999px;
   min-height: 8px;
   min-width: 8px;

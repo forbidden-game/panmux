@@ -44,7 +44,7 @@ When you live in terminal-based coding agents, the hard part is often not emulat
 | Tab UX | Vertical sidebar, visible tab shortcuts, `Alt+1..9` switching |
 | Context | Current working directory shown directly in the sidebar |
 | Automation | Per-window Unix socket control plane with JSON-line messages |
-| Status | External tools can mark a tab as `running`, `done`, `error`, `info`, or clear it |
+| Status | External tools can mark a tab as `running`, `info`, `error`, or clear it |
 | Notifications | Ghostty desktop notifications are mapped back into sidebar/tab status |
 | Child processes | Shell children receive `PANMUX_INSTANCE_ID`, `PANMUX_SOCKET_PATH`, `PANMUX_TAB_ID`, and `PANMUX_SURFACE_ID` |
 
@@ -81,10 +81,11 @@ The current validated baseline on Arch Linux + Hyprland + Wayland is:
 `panmux` does **not** modify Codex source code. The integration strategy is external and practical:
 
 - `scripts/panmux_codex_notify.py` bridges Codex-style notify payloads
-- `scripts/panmux_codex_wrapper.sh` is a weaker fallback that sets status before and after a Codex process
+- bare interactive `codex` commands now auto-mark the tab as `running` via shell preexec detection
+- `scripts/panmux_codex_wrapper.sh` remains a weaker fallback for explicit process-level status updates
 - interactive Codex completion has been observed to emit `OSC 9;pong`
 - Ghostty already maps `OSC 9` to desktop notifications
-- `panmux` uses that path to reflect completion back into tab state
+- `panmux` uses that path to reflect completion back into tab state as `info`
 
 That gives a useful completion signal without pretending that generic shell exit is the same thing as a real agent event.
 

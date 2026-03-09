@@ -44,7 +44,7 @@
 | 标签页体验 | 纵向侧边栏、显式快捷键提示、`Alt+1..9` 切换 |
 | 上下文感知 | 侧边栏中直接显示当前工作目录 |
 | 自动化接口 | 每个窗口一个 Unix socket 控制平面，使用 JSON Line 消息 |
-| 状态标记 | 外部工具可把标签页标记为 `running`、`done`、`error`、`info`，也可以清空 |
+| 状态标记 | 外部工具可把标签页标记为 `running`、`info`、`error`，也可以清空 |
 | 通知联动 | Ghostty 桌面通知会回流为侧边栏和标签页状态 |
 | 子进程环境 | shell 子进程会收到 `PANMUX_INSTANCE_ID`、`PANMUX_SOCKET_PATH`、`PANMUX_TAB_ID`、`PANMUX_SURFACE_ID` |
 
@@ -81,10 +81,11 @@
 `panmux` **不会** 修改 Codex 源码。当前策略是外部集成，而且是务实的那种：
 
 - `scripts/panmux_codex_notify.py` 用来桥接 Codex 风格的通知 payload
-- `scripts/panmux_codex_wrapper.sh` 是较弱的兜底方案，可在 Codex 进程前后设置状态
+- 裸跑交互式 `codex` 时，现在会通过 shell preexec 检测自动把 tab 标成 `running`
+- `scripts/panmux_codex_wrapper.sh` 仍然保留，作为较弱的进程级兜底方案
 - 已观察到交互式 Codex 完成时会发出 `OSC 9;pong`
 - Ghostty 本来就会把 `OSC 9` 变成桌面通知
-- `panmux` 现在会沿着这条路径，把完成信号回写成 tab 状态
+- `panmux` 现在会沿着这条路径，把完成信号回写成 `info` 状态
 
 这样可以拿到一个实用的“轮次完成”信号，而不是把普通 shell 退出假装成真正的 agent 完成事件。
 
