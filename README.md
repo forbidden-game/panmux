@@ -24,6 +24,8 @@
 
 > Keep Ghostty's fast terminal core. Add the control layer that agent-heavy terminal work actually needs.
 
+The icon shown here is the same artwork shipped in the app bundles and desktop assets.
+
 `panmux` is not trying to be a full `cmux` clone. The scope is deliberately tighter: preserve Ghostty's terminal engine, then improve the Linux GTK shell around it so long-running agent sessions are easier to scan, switch, and coordinate.
 
 ## Why panmux
