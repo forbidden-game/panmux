@@ -26,6 +26,10 @@
   <img alt="license" src="https://img.shields.io/badge/license-MIT-6f42c1" />
 </p>
 
+<p align="center">
+  <img src="images/hero-screenshot.png" alt="panmux screenshot" width="100%" />
+</p>
+
 ---
 
 ## 💡 Why panmux?
