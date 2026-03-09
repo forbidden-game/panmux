@@ -831,8 +831,15 @@ pub const Window = extern struct {
     }
 
     fn panmuxResumeInfoPage(self: *Self, page: *adw.TabPage) bool {
-        const state = publicPanmuxState(keywordOrNull(page.getKeyword())) orelse return false;
-        if (!std.mem.eql(u8, state, "info")) return false;
+        const stored_state = keywordOrNull(page.getKeyword()) orelse return false;
+        switch (panmuxResumeInfoAction(stored_state)) {
+            .none => return false,
+            .clear => {
+                self.clearPanmuxStatus(page);
+                return true;
+            },
+            .running => {},
+        }
 
         self.applyPanmuxStatus(page, .{
             .title = "Codex",
@@ -841,6 +848,21 @@ pub const Window = extern struct {
         });
         page.setNeedsAttention(@intFromBool(false));
         return true;
+    }
+
+    const PanmuxResumeInfoAction = enum {
+        none,
+        clear,
+        running,
+    };
+
+    fn panmuxResumeInfoAction(stored_state: []const u8) PanmuxResumeInfoAction {
+        const state = publicPanmuxState(stored_state) orelse return .none;
+        if (!std.mem.eql(u8, state, "info")) return .none;
+        if (std.mem.eql(u8, stored_state, "done")) {
+            return .clear;
+        }
+        return .running;
     }
 
     fn resolvePanmuxPage(self: *Self, params: panmux_ipc.Params) ?*adw.TabPage {
@@ -1034,9 +1056,7 @@ pub const Window = extern struct {
     }
 
     fn storedPanmuxState(params: panmux_ipc.Params) []const u8 {
-        const state = normalizedPanmuxState(params.state);
-        if (state.len == 0) return "";
-        return state;
+        return params.state orelse "";
     }
 
     fn panmuxStatusTooltip(params: panmux_ipc.Params, buf: []u8) [*:0]const u8 {
@@ -2586,10 +2606,18 @@ test "panmux info states stay plain info" {
     });
     try std.testing.expectEqualStrings("info", turn_complete);
 
-    const generic = Window.storedPanmuxState(.{
+    const exited = Window.storedPanmuxState(.{
         .title = "Codex",
         .body = "session exited",
-        .state = "info",
+        .state = "done",
     });
-    try std.testing.expectEqualStrings("info", generic);
+    try std.testing.expectEqualStrings("done", exited);
+    try std.testing.expectEqualStrings("info", Window.publicPanmuxState(exited).?);
+}
+
+test "panmux resume info action clears done and resumes active info" {
+    try std.testing.expectEqual(.running, Window.panmuxResumeInfoAction("info"));
+    try std.testing.expectEqual(.clear, Window.panmuxResumeInfoAction("done"));
+    try std.testing.expectEqual(.none, Window.panmuxResumeInfoAction("error"));
+    try std.testing.expectEqual(.none, Window.panmuxResumeInfoAction(""));
 }
