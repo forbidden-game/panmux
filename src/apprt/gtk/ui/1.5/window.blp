@@ -248,9 +248,13 @@ template $GhosttyWindow: Adw.ApplicationWindow {
                         Gtk.Box {
                           halign: end;
                           hexpand: false;
-                          orientation: horizontal;
-                          spacing: 6;
+                          orientation: vertical;
+                          spacing: 4;
                           valign: center;
+
+                          styles [
+                            "panmux-sidebar-meta",
+                          ]
 
                           Gtk.Label {
                             halign: end;
