@@ -212,29 +212,57 @@ pub const Option = enum {
 };
 
 fn nextOptionLen(raw: []const u8) usize {
+    const Quote = enum {
+        single,
+        double,
+        ansi_single,
+    };
+
     var i: usize = 0;
-    var quote: ?u8 = null;
+    var quote: ?Quote = null;
     while (i < raw.len) : (i += 1) {
         const c = raw[i];
         if (quote) |q| {
-            if (c == q) {
-                quote = null;
-                continue;
-            }
+            switch (q) {
+                .single => {
+                    if (c == '\'') quote = null;
+                    continue;
+                },
+                .double => {
+                    if (c == '"') {
+                        quote = null;
+                        continue;
+                    }
 
-            if (q == '"' and c == '\\' and i + 1 < raw.len) {
-                i += 1;
-                continue;
-            }
+                    if (c == '\\' and i + 1 < raw.len) {
+                        i += 1;
+                        continue;
+                    }
 
-            continue;
+                    continue;
+                },
+                .ansi_single => {
+                    if (c == '\'') {
+                        quote = null;
+                        continue;
+                    }
+
+                    if (c == '\\' and i + 1 < raw.len) {
+                        i += 1;
+                        continue;
+                    }
+
+                    continue;
+                },
+            }
         }
 
         switch (c) {
             '\\' => {
                 if (i + 1 < raw.len) i += 1;
             },
-            '\'', '"' => quote = c,
+            '\'' => quote = if (i > 0 and raw[i - 1] == '$') .ansi_single else .single,
+            '"' => quote = .double,
             ';' => return i,
             else => {},
         }
@@ -596,6 +624,25 @@ test "OSC 133: end_input_start_output with cmdline escaped semicolon" {
 
     try cmd.semantic_prompt.writeCommandLine(&w.writer);
     try testing.expectEqualStrings("codex; echo hi", w.written());
+}
+
+test "OSC 133: end_input_start_output with cmdline ansi single quoted escaped apostrophe and semicolon" {
+    const testing = std.testing;
+
+    var w: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer w.deinit();
+
+    var p: Parser = .init(null);
+    const input = "133;C;cmdline=$'co\\'dex\\n; echo';aid=foo";
+    for (input) |ch| p.next(ch);
+
+    const cmd = p.end(null).?.*;
+    try testing.expect(cmd == .semantic_prompt);
+    try testing.expect(cmd.semantic_prompt.action == .end_input_start_output);
+    try testing.expectEqualStrings("foo", cmd.semantic_prompt.readOption(.aid).?);
+
+    try cmd.semantic_prompt.writeCommandLine(&w.writer);
+    try testing.expectEqualStrings("co'dex\n; echo", w.written());
 }
 
 test "OSC 133: end_input_start_output with cmdline_url 1" {
