@@ -1186,17 +1186,12 @@ pub const Surface = extern struct {
         self.cancelPanmuxCodexProbe();
         if (!priv.panmux_auto_codex_running) return;
         priv.panmux_auto_codex_running = false;
+        _ = exit_code;
 
         const window = ext.getAncestor(Window, self.as(gtk.Widget)) orelse return;
-        const state = window.panmuxStateForSurface(self) orelse return;
-        if (!std.mem.eql(u8, state, "running")) return;
-
         var surface_buf: [32]u8 = undefined;
         const surface_id = std.fmt.bufPrint(&surface_buf, "{x}", .{@intFromPtr(self)}) catch return;
-        _ = window.panmuxNotify(.{
-            .title = "Codex",
-            .body = if ((exit_code orelse 0) == 0) "session exited" else "session exited with error",
-            .state = if ((exit_code orelse 0) == 0) "_panmux_codex_done" else "error",
+        _ = window.panmuxClearStatus(.{
             .surface_id = surface_id,
         });
     }
