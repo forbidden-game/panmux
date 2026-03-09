@@ -7,7 +7,6 @@ import sys
 from typing import Any
 
 TURN_COMPLETE = "agent-turn-complete"
-RESUMABLE_STATE = "codex-turn-complete"
 
 
 def get_path(obj: Any, *path: str) -> Any:
@@ -56,13 +55,6 @@ def state_for(payload: dict[str, Any]) -> str:
     if get_path(payload, "error") not in (None, False, ""):
         return "error"
     return "info"
-
-
-def panmux_state_for(payload: dict[str, Any]) -> str:
-    state = state_for(payload)
-    if event_type(payload) == TURN_COMPLETE and state == "info":
-        return RESUMABLE_STATE
-    return state
 
 
 def title_for(payload: dict[str, Any]) -> str:
@@ -117,7 +109,7 @@ def main() -> int:
         "--body",
         body_for(payload),
         "--state",
-        panmux_state_for(payload),
+        state_for(payload),
     ]
 
     try:
