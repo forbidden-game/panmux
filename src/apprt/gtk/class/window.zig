@@ -938,7 +938,7 @@ pub const Window = extern struct {
             return .{
                 .title = "Codex",
                 .body = "turn complete",
-                .state = "info",
+                .state = resumable_codex_turn_complete_state,
             };
         }
 
@@ -1043,6 +1043,7 @@ pub const Window = extern struct {
     }
 
     fn isResumableCodexTurnComplete(params: panmux_ipc.Params) bool {
+        if (std.mem.eql(u8, params.state orelse "", resumable_codex_turn_complete_state)) return true;
         if (!std.mem.eql(u8, normalizedPanmuxState(params.state), "info")) return false;
         if (!std.mem.eql(u8, params.title orelse "", "Codex")) return false;
         return std.mem.eql(u8, params.body orelse "", "turn complete");
@@ -1631,8 +1632,8 @@ pub const Window = extern struct {
         _: *Self,
         keyword_: ?[*:0]const u8,
     ) callconv(.c) [*:0]const u8 {
-        const keyword = keyword_ orelse return glib.ext.dupeZ(u8, "");
-        return glib.ext.dupeZ(u8, std.mem.span(keyword));
+        const state = publicPanmuxState(keywordOrNull(keyword_)) orelse return glib.ext.dupeZ(u8, "");
+        return glib.ext.dupeZ(u8, state);
     }
 
     fn closureSidebarStatusTextVisible(
@@ -2606,4 +2607,11 @@ test "panmux status keyword only marks Codex turn completion as resumable" {
         .state = "info",
     });
     try std.testing.expectEqualStrings("info", generic);
+
+    const explicit = Window.storedPanmuxState(.{
+        .title = "Codex",
+        .body = "Finished syncing metadata",
+        .state = resumable_codex_turn_complete_state,
+    });
+    try std.testing.expectEqualStrings(resumable_codex_turn_complete_state, explicit);
 }
