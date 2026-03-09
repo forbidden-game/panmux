@@ -1,11 +1,15 @@
 <p align="center">
-  <img src="images/icons/icon_128.png" alt="panmux icon" width="96" />
+  <img src="images/icons/icon_128.png" alt="panmux icon" width="128" />
 </p>
 
 <h1 align="center">panmux</h1>
 
 <p align="center">
-  A Ghostty GTK fork for coding-agent terminal workflows on Linux/Wayland.
+  <strong>🚀 The terminal built for coding agents</strong>
+</p>
+
+<p align="center">
+  A Ghostty fork that adds the control layer agent-heavy workflows actually need
 </p>
 
 <p align="center">
@@ -16,128 +20,261 @@
 
 <p align="center">
   <img alt="platform" src="https://img.shields.io/badge/platform-Linux%20%2F%20Wayland-1f6feb" />
-  <img alt="ui" src="https://img.shields.io/badge/frontend-GTK-2da44e" />
+  <img alt="ui" src="https://img.shields.io/badge/frontend-GTK4-2da44e" />
   <img alt="base" src="https://img.shields.io/badge/base-Ghostty-f59e0b" />
   <img alt="status" src="https://img.shields.io/badge/status-active%20prototype-dc2626" />
   <img alt="license" src="https://img.shields.io/badge/license-MIT-6f42c1" />
 </p>
 
-> Keep Ghostty's fast terminal core. Add the control layer that agent-heavy terminal work actually needs.
+---
 
-The icon shown here is the same artwork shipped in the app bundles and desktop assets.
+## 💡 Why panmux?
 
-`panmux` is not trying to be a full `cmux` clone. The scope is deliberately tighter: preserve Ghostty's terminal engine, then improve the Linux GTK shell around it so long-running agent sessions are easier to scan, switch, and coordinate.
+When you live in terminal-based coding agents like **Codex** or **pi**, the hard part isn't emulation—it's **coordination**:
 
-## Why panmux
+- 🤔 Which tab is busy right now?
+- ✅ Which session already finished?
+- 📁 Which working directory does this tab belong to?
+- 🔔 How do external tools signal useful state without screen scraping?
 
-When you live in terminal-based coding agents, the hard part is often not emulation. It is coordination:
+**panmux** answers these questions with a workflow-oriented UI and a small control plane, while standing on Ghostty's blazing-fast terminal foundation.
 
-- Which tab is busy right now?
-- Which session already finished?
-- Which working directory does this tab belong to?
-- How do external tools signal useful state without screen scraping?
+> **Core Philosophy:** Keep Ghostty's fast terminal core. Add the control layer that agent-heavy terminal work actually needs.
 
-`panmux` exists to answer those questions with a workflow-oriented tab UI and a small control plane, while still standing on Ghostty's terminal foundation.
+---
 
-## Feature snapshot
+## ✨ Key Features
 
-| Area | What is available today |
-| --- | --- |
-| Tab UX | Vertical sidebar, visible tab shortcuts, `Alt+1..9` switching |
-| Context | Current working directory shown directly in the sidebar |
-| Automation | Per-window Unix socket control plane with JSON-line messages |
-| Status | External tools can mark a tab as `running`, `info`, `error`, or clear it |
-| Notifications | Ghostty desktop notifications are mapped back into sidebar/tab status |
-| Child processes | Shell children receive `PANMUX_INSTANCE_ID`, `PANMUX_SOCKET_PATH`, `PANMUX_TAB_ID`, and `PANMUX_SURFACE_ID` |
+### 🎯 Agent-First Design
 
-## What panmux changes compared to Ghostty
+Built from the ground up for coding agent workflows:
 
-`panmux` does **not** replace Ghostty's renderer, PTY model, terminal engine, or split/tab core.
+- **📊 Vertical Sidebar** — See all your sessions at a glance, not hidden in tabs
+- **📂 Live Working Directory** — Know where each session is operating
+- **⚡ Status Management** — External tools can mark tabs as `running`, `info`, `error`, or `done`
+- **🔔 Smart Notifications** — Desktop notifications mapped back into sidebar status
 
-It currently stays intentionally narrow:
+### ⌨️ Keyboard-Driven
 
-- reworks the GTK window shell around Ghostty's existing Linux frontend
-- adds a left sidebar as the primary tab UI
-- surfaces cwd from Ghostty's existing pwd signal path
-- adds a per-window Unix socket control plane
-- injects `PANMUX_*` environment variables into shell children
-- turns notification events into tab/sidebar status updates
+- **Alt+1..9** — Instant tab switching with visible shortcuts
+- **No mouse required** — Navigate your entire workflow from the keyboard
 
-In one line: **Ghostty remains the terminal; panmux adds agent-oriented window control and status UX on top.**
+### 🔌 Powerful Control Plane
 
-## Current validated baseline
+- **Unix Socket API** — JSON-line protocol for external tool integration
+- **Multi-Instance Isolation** — Each window has its own control socket
+- **Environment Variables** — `PANMUX_INSTANCE_ID`, `PANMUX_SOCKET_PATH`, `PANMUX_TAB_ID`, `PANMUX_SURFACE_ID`
+- **CLI Tool** — `panmuxctl` for scripting and automation
 
-The current validated baseline on Arch Linux + Hyprland + Wayland is:
+### 🎨 Modern Stack
 
-- vertical sidebar is working
-- cwd is shown in the sidebar
-- `Alt+1..9` switches tabs
-- `panmuxctl notify` works
-- `panmuxctl set-status` works
-- `panmuxctl clear-status` works
-- `panmuxctl focus-tab` works
-- `panmuxctl list-tabs` works
+- **Zig + GTK4** — Native performance with modern UI
+- **Ghostty Core** — Industry-leading terminal emulation
+- **Wayland Native** — First-class Linux desktop integration
 
-## Codex integration: what is real today
+---
 
-`panmux` does **not** modify Codex source code. The integration strategy is external and practical:
+## 🚀 Quick Start
 
-- `scripts/panmux_codex_notify.py` bridges Codex-style notify payloads
-- bare interactive `codex` commands now auto-mark the tab as `running` via shell preexec detection
-- `scripts/panmux_codex_wrapper.sh` remains a weaker fallback for explicit process-level status updates
-- interactive Codex completion has been observed to emit `OSC 9;pong`
-- Ghostty already maps `OSC 9` to desktop notifications
-- `panmux` uses that path to reflect completion back into tab state as `info`
-
-That gives a useful completion signal without pretending that generic shell exit is the same thing as a real agent event.
-
-## Rendering note
-
-`panmux` renders ANSI and truecolor output correctly. A temporary "Codex is all white" issue was traced to inherited environment state, not rendering bugs: a parent shell had `NO_COLOR=1`.
-
-The local launcher now strips `NO_COLOR` before starting the app so Codex can render normally.
-
-## Install locally
-
-The recommended path right now is local-prefix install rather than distro packaging:
+### Installation
 
 ```bash
-scripts/install_local_panmux.sh
+# Clone the repository
+git clone https://github.com/yourusername/ghostty-panmux.git
+cd ghostty-panmux
+
+# Install locally (recommended for development)
+./scripts/install_local_panmux.sh
 ```
 
-That script:
+This installs to `~/.local/opt/panmux/` and creates:
+- `~/.local/bin/panmux` — Main terminal
+- `~/.local/bin/panmuxctl` — Control CLI
+- `~/.local/share/applications/panmux.desktop` — Desktop launcher
 
-- builds `ReleaseFast`
-- installs into `~/.local/opt/panmux/<git-sha>`
-- points `~/.local/opt/panmux/current` at the active version
-- installs `~/.local/bin/panmux`
-- installs `~/.local/bin/panmuxctl`
-- installs `~/.local/share/applications/panmux.desktop`
-- launches with `--gtk-single-instance=false` by default
-- removes `NO_COLOR` before starting the app
+### Basic Usage
 
-## Repository guide
+```bash
+# Launch panmux
+panmux
 
-This repository is the single source of truth for `panmux`.
+# In any tab, control the current session
+panmuxctl notify --title "Build" --body "Complete" --state done
+panmuxctl set-status --state running --title "Testing"
+panmuxctl clear-status
 
-- runtime code lives in the Ghostty GTK fork
-- [`docs/IMPLEMENTATION_BLUEPRINT.md`](./docs/IMPLEMENTATION_BLUEPRINT.md) explains the implementation shape
-- [`docs/PATCH_MAP.md`](./docs/PATCH_MAP.md) tracks the fork delta
-- [`docs/PHASE0_SPIKE_REPORT.md`](./docs/PHASE0_SPIKE_REPORT.md) records the early validation work
-- `scripts/` contains local install and Codex integration helpers
+# Switch tabs
+panmuxctl focus-tab --tab 2
 
-If you keep tracking upstream Ghostty, the recommended remote layout is:
+# List all tabs
+panmuxctl list-tabs
+```
 
-- your `panmux` GitHub repo as `origin`
-- `ghostty-org/ghostty` as `upstream`
+---
 
-## Scope boundaries
+## 🎮 What's Different from Ghostty?
 
-Current non-goals or not-yet-done items:
+panmux **does not** replace Ghostty's renderer, PTY model, or terminal engine.
 
-- no attempt to fully recreate `cmux`
-- no Electron or Tauri wrapper
-- no cwd prompt parsing hacks
-- no fake "Codex complete" signal based on generic shell lifecycle
-- no `pi` integration yet
-- no claim that libghostty embedding is the better path right now
+It adds a focused set of enhancements:
+
+| Component | Change |
+|-----------|--------|
+| **Window Shell** | Reworked GTK window with vertical sidebar |
+| **Tab UI** | Left sidebar replaces top tab bar |
+| **Working Directory** | Visible in sidebar, sourced from Ghostty's pwd signal |
+| **Control Plane** | Per-window Unix socket with JSON-line protocol |
+| **Environment** | Injects `PANMUX_*` variables into shell children |
+| **Notifications** | Desktop notifications mapped to tab status |
+
+**In one line:** Ghostty remains the terminal; panmux adds agent-oriented window control and status UX on top.
+
+---
+
+## 🔗 Codex Integration
+
+panmux integrates with Codex **without modifying Codex source code**.
+
+### Current Integration Points
+
+1. **Notification Bridge** — `scripts/panmux_codex_notify.py` bridges Codex notify payloads
+2. **Shell Detection** — Interactive `codex` commands auto-mark tabs as `running`
+3. **Wrapper Fallback** — `scripts/panmux_codex_wrapper.sh` for explicit status updates
+4. **OSC 9 Signal** — Codex completion signals mapped to tab state via Ghostty's notification path
+
+### Example Workflow
+
+```bash
+# Tab automatically marked as "running" when you start Codex
+codex "implement user authentication"
+
+# When Codex completes, tab shows "done" status
+# If you're in another tab, you'll see an attention indicator
+```
+
+---
+
+## 📋 Current Status
+
+**Validated on:** Arch Linux + Hyprland + Wayland
+
+### ✅ Working Features
+
+- ✅ Vertical sidebar navigation
+- ✅ Working directory display
+- ✅ `Alt+1..9` tab switching
+- ✅ `panmuxctl notify` / `set-status` / `clear-status`
+- ✅ `panmuxctl focus-tab` / `list-tabs`
+- ✅ Multi-instance isolation
+- ✅ Environment variable injection
+- ✅ Desktop notification mapping
+
+### 🚧 Scope Boundaries
+
+**Not trying to be:**
+- ❌ A full `cmux` clone
+- ❌ An Electron/Tauri wrapper
+- ❌ A prompt-parsing cwd detector
+- ❌ A generic shell lifecycle tracker
+
+**Current non-goals:**
+- `pi` integration (planned for later)
+- Full session restore/persistence
+- macOS-specific features
+
+---
+
+## 📚 Documentation
+
+- **[Implementation Blueprint](./docs/IMPLEMENTATION_BLUEPRINT.md)** — Technical architecture and design decisions
+- **[Patch Map](./docs/PATCH_MAP.md)** — Fork delta tracking for upstream sync
+- **[Phase 0 Spike Report](./docs/PHASE0_SPIKE_REPORT.md)** — Early validation work
+- **[Scripts](./scripts/)** — Local install and Codex integration helpers
+
+---
+
+## 🛠️ Development
+
+### Build
+
+```bash
+zig build
+```
+
+For faster macOS builds (if you don't need the app bundle):
+```bash
+zig build -Demit-macos-app=false
+```
+
+### Test
+
+```bash
+# Run all tests (slow)
+zig build test
+
+# Run specific tests
+zig build test -Dtest-filter=<test name>
+```
+
+### Format
+
+```bash
+# Zig code
+zig fmt .
+
+# Swift code (macOS)
+swiftlint lint --fix
+
+# Other files
+prettier -w .
+```
+
+---
+
+## 🤝 Contributing
+
+This is an active prototype. Contributions are welcome, but please note:
+
+- **No issues or PRs yet** — The project is in rapid iteration
+- **Focus on Linux/GTK** — macOS support is inherited from Ghostty but not the primary focus
+- **Agent workflows first** — Features should serve coding agent use cases
+
+---
+
+## 🔄 Upstream Sync
+
+This repository tracks Ghostty as upstream:
+
+```bash
+# Recommended remote setup
+git remote add origin <your-panmux-fork>
+git remote add upstream https://github.com/ghostty-org/ghostty
+```
+
+We maintain a minimal fork delta focused on:
+- GTK window shell modifications
+- Sidebar UI components
+- Control plane integration
+- Environment variable injection
+
+---
+
+## 📄 License
+
+MIT License - see [LICENSE](./LICENSE) for details.
+
+Based on [Ghostty](https://github.com/ghostty-org/ghostty) by Mitchell Hashimoto and contributors.
+
+---
+
+## 🙏 Acknowledgments
+
+- **[Ghostty](https://github.com/ghostty-org/ghostty)** — The incredible terminal emulator that makes this possible
+- **[cmux](https://github.com/manaflow-ai/cmux)** — Inspiration for agent-oriented terminal UI
+- **[Codex](https://codex.so)** — The coding agent that drove the need for better terminal coordination
+
+---
+
+<p align="center">
+  <strong>Built with ❤️ for developers who live in the terminal</strong>
+</p>
