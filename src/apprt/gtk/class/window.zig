@@ -1693,41 +1693,6 @@ pub const Window = extern struct {
         return @intFromBool(pos < 9);
     }
 
-    fn closureSidebarStatus(
-        _: *Self,
-        keyword_: ?[*:0]const u8,
-    ) callconv(.c) [*:0]const u8 {
-        const state = publicPanmuxState(keywordOrNull(keyword_)) orelse return glib.ext.dupeZ(u8, "");
-        return glib.ext.dupeZ(u8, state);
-    }
-
-    fn closureSidebarStatusTextVisible(
-        _: *Self,
-        keyword_: ?[*:0]const u8,
-    ) callconv(.c) c_int {
-        const keyword = keyword_ orelse return 0;
-        return @intFromBool(std.mem.span(keyword).len > 0);
-    }
-
-    fn closureSidebarIndicatorVisible(
-        _: *Self,
-        icon: ?*gio.Icon,
-    ) callconv(.c) c_int {
-        return @intFromBool(icon != null);
-    }
-
-    fn closureSidebarStatusVisible(
-        _: *Self,
-        keyword_: ?[*:0]const u8,
-        loading: c_int,
-        icon: ?*gio.Icon,
-    ) callconv(.c) c_int {
-        if (loading != 0) return 1;
-        if (icon != null) return 1;
-        const keyword = keyword_ orelse return 0;
-        return @intFromBool(std.mem.span(keyword).len > 0);
-    }
-
     //---------------------------------------------------------------
     // Virtual methods
 
@@ -2670,10 +2635,6 @@ pub const Window = extern struct {
             class.bindTemplateCallback("sidebar_cwd", &closureSidebarCwd);
             class.bindTemplateCallback("sidebar_hint", &closureSidebarHint);
             class.bindTemplateCallback("sidebar_hint_visible", &closureSidebarHintVisible);
-            class.bindTemplateCallback("sidebar_indicator_visible", &closureSidebarIndicatorVisible);
-            class.bindTemplateCallback("sidebar_status", &closureSidebarStatus);
-            class.bindTemplateCallback("sidebar_status_text_visible", &closureSidebarStatusTextVisible);
-            class.bindTemplateCallback("sidebar_status_visible", &closureSidebarStatusVisible);
             class.bindTemplateCallback("titlebar_style_is_tabs", &closureTitlebarStyleIsTab);
             class.bindTemplateCallback("computed_subtitle", &closureSubtitle);
 

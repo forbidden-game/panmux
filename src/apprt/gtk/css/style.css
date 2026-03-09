@@ -240,22 +240,3 @@ label.resize-overlay {
   min-width: 48px;
   padding: 3px 8px;
 }
-
-.panmux-sidebar-pill {
-  min-height: 0;
-  background-color: rgba(255, 255, 255, 0.08);
-  border-radius: 999px;
-  padding: 3px 8px;
-}
-
-.panmux-sidebar-status {
-  font-weight: 600;
-  text-transform: lowercase;
-}
-
-.panmux-sidebar-dot {
-  background-color: rgb(46, 160, 67);
-  border-radius: 999px;
-  min-height: 8px;
-  min-width: 8px;
-}
