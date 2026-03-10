@@ -42,6 +42,7 @@ const CloseConfirmationDialog = @import("close_confirmation_dialog.zig").CloseCo
 const ConfigErrorsDialog = @import("config_errors_dialog.zig").ConfigErrorsDialog;
 const GlobalShortcuts = @import("global_shortcuts.zig").GlobalShortcuts;
 const panmux = @import("../panmux.zig");
+const panmux_state = @import("../panmux_state.zig");
 const panmux_ipc = @import("../../../panmux_ipc.zig");
 
 const log = std.log.scoped(.gtk_ghostty_application);
@@ -181,6 +182,11 @@ pub const Application = extern struct {
 
         /// Panmux control plane server.
         panmux: ?*panmux.Server = null,
+
+        /// Panmux state store. This is the authoritative state model for
+        /// workspace/session/attention data and should outlive any single UI
+        /// widget tree.
+        panmux_store: panmux_state.Store,
 
         /// This is set to true so long as we request a window exactly
         /// once. This prevents quitting the app before we've shown one
@@ -403,6 +409,7 @@ pub const Application = extern struct {
             .custom_css_providers = .empty,
             .global_shortcuts = gobject.ext.newInstance(GlobalShortcuts, .{}),
             .saved_language = saved_language,
+            .panmux_store = panmux_state.Store.init(alloc),
         };
 
         // Signals
@@ -440,6 +447,7 @@ pub const Application = extern struct {
             server.deinit();
             std.heap.c_allocator.destroy(server);
         }
+        priv.panmux_store.deinit();
         priv.config.unref();
         priv.winproto.deinit(alloc);
         priv.global_shortcuts.unref();
@@ -477,6 +485,10 @@ pub const Application = extern struct {
     pub fn panmuxSocketPath(self: *Self) ?[:0]const u8 {
         const server = self.private().panmux orelse return null;
         return server.socket_path;
+    }
+
+    pub fn panmuxStore(self: *Self) *panmux_state.Store {
+        return &self.private().panmux_store;
     }
 
     /// Get the original language that Ghostty was launched with. This returns a
@@ -2055,6 +2067,32 @@ fn handlePanmuxRequest(_: *Application, request: panmux_ipc.Request) panmux_ipc.
             return panmux_ipc.OwnedResponse.failure(std.heap.c_allocator, "list_tabs_failed") catch panmux_ipc.OwnedResponse{ .ok = false };
         };
         return .{ .ok = true, .tabs = tabs };
+    }
+
+    if (std.mem.eql(u8, request.method, "list-sessions")) {
+        log.info("panmux list-sessions", .{});
+        const sessions = window.panmuxListSessions(std.heap.c_allocator, request.params) catch |err| {
+            log.warn("panmux list-sessions failed err={}", .{err});
+            return panmux_ipc.OwnedResponse.failure(std.heap.c_allocator, "list_sessions_failed") catch panmux_ipc.OwnedResponse{ .ok = false };
+        };
+        return .{ .ok = true, .sessions = sessions };
+    }
+
+    if (std.mem.eql(u8, request.method, "list-attention")) {
+        log.info("panmux list-attention", .{});
+        const attentions = window.panmuxListAttention(std.heap.c_allocator, request.params) catch |err| {
+            log.warn("panmux list-attention failed err={}", .{err});
+            return panmux_ipc.OwnedResponse.failure(std.heap.c_allocator, "list_attention_failed") catch panmux_ipc.OwnedResponse{ .ok = false };
+        };
+        return .{ .ok = true, .attentions = attentions };
+    }
+
+    if (std.mem.eql(u8, request.method, "ack-attention")) {
+        log.info("panmux ack-attention", .{});
+        if (!window.panmuxAckAttention(request.params)) {
+            return panmux_ipc.OwnedResponse.failure(std.heap.c_allocator, "attention_not_found") catch panmux_ipc.OwnedResponse{ .ok = false };
+        }
+        return panmux_ipc.OwnedResponse.success();
     }
 
     log.warn("panmux unsupported method={s}", .{request.method});

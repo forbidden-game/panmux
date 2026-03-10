@@ -79,6 +79,25 @@ def body_for(payload: dict[str, Any]) -> str:
     return et or "turn complete"
 
 
+def session_id_for(payload: dict[str, Any]) -> str | None:
+    env_value = os.environ.get("PANMUX_SESSION_ID", "").strip()
+    if env_value:
+        return env_value
+    return first_nonempty(payload, [
+        ("thread-id",),
+        ("thread_id",),
+        ("thread", "id"),
+    ])
+
+
+def turn_id_for(payload: dict[str, Any]) -> str | None:
+    return first_nonempty(payload, [
+        ("turn-id",),
+        ("turn_id",),
+        ("turn", "id"),
+    ])
+
+
 def main() -> int:
     raw = sys.argv[1] if len(sys.argv) > 1 else sys.stdin.read()
     raw = raw.strip()
@@ -109,7 +128,20 @@ def main() -> int:
         body_for(payload),
         "--state",
         state_for(payload),
+        "--ack-required",
+        "--agent-type",
+        "codex",
+        "--agent-label",
+        "Codex",
     ]
+
+    session_id = session_id_for(payload)
+    if session_id:
+        cmd.extend(["--session-id", session_id])
+
+    turn_id = turn_id_for(payload)
+    if turn_id:
+        cmd.extend(["--turn-id", turn_id])
 
     try:
         subprocess.run(cmd, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=os.environ.copy())

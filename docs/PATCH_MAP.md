@@ -3,8 +3,13 @@
 ## 当前主线
 
 - 主线：`Ghostty GTK fork`
-- 当前阶段：`Phase 1 sidebar skeleton`
+- 当前阶段：`Phase 1 sidebar skeleton` + `Phase 2 state refactor design`
 - 暂不走：`embedded/libghostty` Linux 宿主主线
+
+## 当前优先文档
+
+- 实现主线：`docs/IMPLEMENTATION_BLUEPRINT.md`
+- 当前结构重整：`docs/REFACTOR_BLUEPRINT.md`
 
 ## 第一批目标文件
 
@@ -56,4 +61,3 @@
 - split/tree 底层重写
 - prompt 解析式 cwd
 - 普通 shell 生命周期冒充 Codex turn 完成
-

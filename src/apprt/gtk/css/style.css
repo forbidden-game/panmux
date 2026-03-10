@@ -209,8 +209,12 @@ label.resize-overlay {
 }
 
 .panmux-sidebar-selected {
-  background-color: rgba(255, 255, 255, 0.09);
+  background-color: rgba(255, 255, 255, 0.05);
   border-radius: 12px;
+  outline-color: rgba(255, 255, 255, 0.14);
+  outline-offset: -1px;
+  outline-style: solid;
+  outline-width: 1px;
 }
 
 .panmux-sidebar-state {
@@ -218,7 +222,7 @@ label.resize-overlay {
 }
 
 .panmux-sidebar-state-info {
-  background-color: rgba(46, 160, 67, 0.14);
+  background-color: rgba(46, 160, 67, 0.2);
 }
 
 .panmux-sidebar-state-warning {
@@ -237,6 +241,13 @@ label.resize-overlay {
   outline-color: rgba(255, 255, 255, 0.55);
   outline-style: solid;
   outline-width: 2px;
+}
+
+.panmux-sidebar-attention-count {
+  color: rgba(24, 24, 24, 0.92);
+  font-weight: 700;
+  min-width: 18px;
+  padding: 2px 6px;
 }
 
 .panmux-sidebar-title {
@@ -273,8 +284,8 @@ label.resize-overlay {
 }
 
 .panmux-sidebar-badge-info {
-  background-color: rgba(46, 160, 67, 0.18);
-  color: rgb(121, 224, 146);
+  background-color: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.82);
 }
 
 .panmux-sidebar-badge-warning {
@@ -298,4 +309,29 @@ label.resize-overlay {
   border-radius: 999px;
   min-width: 48px;
   padding: 3px 8px;
+}
+
+.panmux-detail {
+  background-color: rgba(255, 255, 255, 0.03);
+}
+
+.panmux-detail-title {
+  font-weight: 700;
+}
+
+.panmux-detail-summary {
+  min-width: 0;
+}
+
+.panmux-detail-section {
+  margin-top: 4px;
+}
+
+.panmux-detail-list {
+  background: transparent;
+}
+
+.panmux-detail-row {
+  min-width: 0;
+  padding: 8px 10px;
 }

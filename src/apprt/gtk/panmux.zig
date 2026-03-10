@@ -117,7 +117,10 @@ fn isSupportedMethod(method: []const u8) bool {
         std.mem.eql(u8, method, "set-status") or
         std.mem.eql(u8, method, "clear-status") or
         std.mem.eql(u8, method, "focus-tab") or
-        std.mem.eql(u8, method, "list-tabs");
+        std.mem.eql(u8, method, "list-tabs") or
+        std.mem.eql(u8, method, "list-sessions") or
+        std.mem.eql(u8, method, "list-attention") or
+        std.mem.eql(u8, method, "ack-attention");
 }
 
 fn readLineAlloc(alloc: std.mem.Allocator, stream: net.Stream, limit: usize) ![]u8 {

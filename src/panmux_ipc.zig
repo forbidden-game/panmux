@@ -7,6 +7,12 @@ pub const Params = struct {
     tab_index: ?u32 = null,
     tab_id: ?[]const u8 = null,
     surface_id: ?[]const u8 = null,
+    session_id: ?[]const u8 = null,
+    agent_type: ?[]const u8 = null,
+    agent_label: ?[]const u8 = null,
+    turn_id: ?[]const u8 = null,
+    attention_id: ?[]const u8 = null,
+    ack_required: ?bool = null,
 };
 
 pub const Request = struct {
@@ -24,12 +30,42 @@ pub const TabInfo = struct {
     selected: bool,
     needs_attention: bool,
     loading: bool,
+    running_count: u32 = 0,
+    unread_count: u32 = 0,
+};
+
+pub const SessionInfo = struct {
+    workspace_id: []const u8,
+    session_id: []const u8,
+    agent_type: []const u8,
+    agent_label: []const u8,
+    phase: []const u8,
+    severity: []const u8,
+    surface_id: ?[]const u8 = null,
+    status_text: ?[]const u8 = null,
+    turn_id: ?[]const u8 = null,
+    summary: ?[]const u8 = null,
+    updated_at_ms: i64,
+};
+
+pub const AttentionInfo = struct {
+    attention_id: []const u8,
+    workspace_id: []const u8,
+    session_id: ?[]const u8 = null,
+    severity: []const u8,
+    title: []const u8,
+    body: ?[]const u8 = null,
+    ack_required: bool,
+    acked: bool,
+    created_at_ms: i64,
 };
 
 pub const Response = struct {
     ok: bool,
     @"error": ?[]const u8 = null,
     tabs: ?[]const TabInfo = null,
+    sessions: ?[]const SessionInfo = null,
+    attentions: ?[]const AttentionInfo = null,
 };
 
 pub const json_opts: std.json.Stringify.Options = .{
@@ -43,9 +79,18 @@ pub const OwnedParams = struct {
     tab_index: ?u32 = null,
     tab_id: ?[:0]u8 = null,
     surface_id: ?[:0]u8 = null,
+    session_id: ?[:0]u8 = null,
+    agent_type: ?[:0]u8 = null,
+    agent_label: ?[:0]u8 = null,
+    turn_id: ?[:0]u8 = null,
+    attention_id: ?[:0]u8 = null,
+    ack_required: ?bool = null,
 
     pub fn clone(alloc: std.mem.Allocator, params: Params) !OwnedParams {
-        var result: OwnedParams = .{ .tab_index = params.tab_index };
+        var result: OwnedParams = .{
+            .tab_index = params.tab_index,
+            .ack_required = params.ack_required,
+        };
         errdefer result.deinit(alloc);
 
         if (params.title) |value| result.title = try alloc.dupeZ(u8, value);
@@ -53,6 +98,11 @@ pub const OwnedParams = struct {
         if (params.state) |value| result.state = try alloc.dupeZ(u8, value);
         if (params.tab_id) |value| result.tab_id = try alloc.dupeZ(u8, value);
         if (params.surface_id) |value| result.surface_id = try alloc.dupeZ(u8, value);
+        if (params.session_id) |value| result.session_id = try alloc.dupeZ(u8, value);
+        if (params.agent_type) |value| result.agent_type = try alloc.dupeZ(u8, value);
+        if (params.agent_label) |value| result.agent_label = try alloc.dupeZ(u8, value);
+        if (params.turn_id) |value| result.turn_id = try alloc.dupeZ(u8, value);
+        if (params.attention_id) |value| result.attention_id = try alloc.dupeZ(u8, value);
 
         return result;
     }
@@ -63,6 +113,11 @@ pub const OwnedParams = struct {
         if (self.state) |value| alloc.free(value);
         if (self.tab_id) |value| alloc.free(value);
         if (self.surface_id) |value| alloc.free(value);
+        if (self.session_id) |value| alloc.free(value);
+        if (self.agent_type) |value| alloc.free(value);
+        if (self.agent_label) |value| alloc.free(value);
+        if (self.turn_id) |value| alloc.free(value);
+        if (self.attention_id) |value| alloc.free(value);
         self.* = undefined;
     }
 
@@ -74,6 +129,12 @@ pub const OwnedParams = struct {
             .tab_index = self.tab_index,
             .tab_id = if (self.tab_id) |value| value else null,
             .surface_id = if (self.surface_id) |value| value else null,
+            .session_id = if (self.session_id) |value| value else null,
+            .agent_type = if (self.agent_type) |value| value else null,
+            .agent_label = if (self.agent_label) |value| value else null,
+            .turn_id = if (self.turn_id) |value| value else null,
+            .attention_id = if (self.attention_id) |value| value else null,
+            .ack_required = self.ack_required,
         };
     }
 };
@@ -113,6 +174,8 @@ pub const OwnedTabInfo = struct {
     selected: bool,
     needs_attention: bool,
     loading: bool,
+    running_count: u32 = 0,
+    unread_count: u32 = 0,
 
     pub fn clone(alloc: std.mem.Allocator, info: TabInfo) !OwnedTabInfo {
         var result: OwnedTabInfo = .{
@@ -122,6 +185,8 @@ pub const OwnedTabInfo = struct {
             .selected = info.selected,
             .needs_attention = info.needs_attention,
             .loading = info.loading,
+            .running_count = info.running_count,
+            .unread_count = info.unread_count,
         };
         errdefer result.deinit(alloc);
 
@@ -142,10 +207,62 @@ pub const OwnedTabInfo = struct {
     }
 };
 
+pub const OwnedSessionInfo = struct {
+    workspace_id: [:0]u8,
+    session_id: [:0]u8,
+    agent_type: [:0]u8,
+    agent_label: [:0]u8,
+    phase: [:0]u8,
+    severity: [:0]u8,
+    surface_id: ?[:0]u8 = null,
+    status_text: ?[:0]u8 = null,
+    turn_id: ?[:0]u8 = null,
+    summary: ?[:0]u8 = null,
+    updated_at_ms: i64,
+
+    pub fn deinit(self: *OwnedSessionInfo, alloc: std.mem.Allocator) void {
+        alloc.free(self.workspace_id);
+        alloc.free(self.session_id);
+        alloc.free(self.agent_type);
+        alloc.free(self.agent_label);
+        alloc.free(self.phase);
+        alloc.free(self.severity);
+        if (self.surface_id) |value| alloc.free(value);
+        if (self.status_text) |value| alloc.free(value);
+        if (self.turn_id) |value| alloc.free(value);
+        if (self.summary) |value| alloc.free(value);
+        self.* = undefined;
+    }
+};
+
+pub const OwnedAttentionInfo = struct {
+    attention_id: [:0]u8,
+    workspace_id: [:0]u8,
+    session_id: ?[:0]u8 = null,
+    severity: [:0]u8,
+    title: [:0]u8,
+    body: ?[:0]u8 = null,
+    ack_required: bool,
+    acked: bool,
+    created_at_ms: i64,
+
+    pub fn deinit(self: *OwnedAttentionInfo, alloc: std.mem.Allocator) void {
+        alloc.free(self.attention_id);
+        alloc.free(self.workspace_id);
+        alloc.free(self.severity);
+        alloc.free(self.title);
+        if (self.session_id) |value| alloc.free(value);
+        if (self.body) |value| alloc.free(value);
+        self.* = undefined;
+    }
+};
+
 pub const OwnedResponse = struct {
     ok: bool,
     @"error": ?[:0]u8 = null,
     tabs: ?[]OwnedTabInfo = null,
+    sessions: ?[]OwnedSessionInfo = null,
+    attentions: ?[]OwnedAttentionInfo = null,
 
     pub fn success() OwnedResponse {
         return .{ .ok = true };
@@ -163,6 +280,14 @@ pub const OwnedResponse = struct {
         if (self.tabs) |tabs| {
             for (tabs) |*tab| tab.deinit(alloc);
             alloc.free(tabs);
+        }
+        if (self.sessions) |sessions| {
+            for (sessions) |*session| session.deinit(alloc);
+            alloc.free(sessions);
+        }
+        if (self.attentions) |attentions| {
+            for (attentions) |*attention| attention.deinit(alloc);
+            alloc.free(attentions);
         }
         self.* = undefined;
     }

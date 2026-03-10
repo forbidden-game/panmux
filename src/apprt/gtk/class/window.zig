@@ -29,6 +29,7 @@ const Surface = @import("surface.zig").Surface;
 const Tab = @import("tab.zig").Tab;
 const DebugWarning = @import("debug_warning.zig").DebugWarning;
 const CommandPalette = @import("command_palette.zig").CommandPalette;
+const panmux_state = @import("../panmux_state.zig");
 const panmux_ipc = @import("../../../panmux_ipc.zig");
 const WeakRef = @import("../weak_ref.zig").WeakRef;
 
@@ -264,6 +265,11 @@ pub const Window = extern struct {
         // Template bindings
         tab_overview: *adw.TabOverview,
         sidebar: *gtk.ListView,
+        panmux_detail_title: *gtk.Label,
+        panmux_detail_summary: *gtk.Label,
+        panmux_ack_button: *gtk.Button,
+        panmux_session_source: *gtk.StringList,
+        panmux_attention_source: *gtk.StringList,
         tab_bar: *adw.TabBar,
         tab_view: *adw.TabView,
         toolbar: *adw.ToolbarView,
@@ -780,22 +786,7 @@ pub const Window = extern struct {
     ) bool {
         const tab = ext.getAncestor(Tab, surface.as(gtk.Widget)) orelse return false;
         const page = self.private().tab_view.getPage(tab.as(gtk.Widget));
-        return self.panmuxNotifyParamsForPage(page, desktopNotificationPanmuxParams(title, body));
-    }
-
-    pub fn panmuxSetStatus(self: *Self, params: panmux_ipc.Params) bool {
-        const page = self.resolvePanmuxPage(params) orelse return false;
-        self.applyPanmuxStatus(page, params);
-        return true;
-    }
-
-    pub fn panmuxClearStatus(self: *Self, params: panmux_ipc.Params) bool {
-        const page = self.resolvePanmuxPage(params) orelse return false;
-        self.clearPanmuxStatus(page);
-        return true;
-    }
-
-    fn panmuxNotifyParamsForPage(self: *Self, page: *adw.TabPage, params: panmux_ipc.Params) bool {
+        const params = desktopNotificationPanmuxParams(title, body);
         self.applyPanmuxNotification(page, params);
 
         const foreground = page.getSelected() != 0 and self.as(gtk.Window).isActive() != 0;
@@ -809,6 +800,18 @@ pub const Window = extern struct {
             self.addToast(panmuxToastMessage(params, &toast_buf));
         }
 
+        return true;
+    }
+
+    pub fn panmuxSetStatus(self: *Self, params: panmux_ipc.Params) bool {
+        const page = self.resolvePanmuxPage(params) orelse return false;
+        self.applyPanmuxStatus(page, params);
+        return true;
+    }
+
+    pub fn panmuxClearStatus(self: *Self, params: panmux_ipc.Params) bool {
+        const page = self.resolvePanmuxPage(params) orelse return false;
+        self.clearPanmuxStatus(page, params);
         return true;
     }
 
@@ -841,20 +844,88 @@ pub const Window = extern struct {
     pub fn panmuxStateForSurface(self: *Self, surface: *Surface) ?[]const u8 {
         const tab = ext.getAncestor(Tab, surface.as(gtk.Widget)) orelse return null;
         const page = self.private().tab_view.getPage(tab.as(gtk.Widget));
-        return panmuxStateForPage(page);
+        return self.panmuxStateForPage(page);
     }
 
     pub fn panmuxClearStatusSurface(self: *Self, surface: *Surface) bool {
         const tab = ext.getAncestor(Tab, surface.as(gtk.Widget)) orelse return false;
         const page = self.private().tab_view.getPage(tab.as(gtk.Widget));
-        self.clearPanmuxStatus(page);
+        var surface_buf: [32]u8 = undefined;
+        const surface_id = std.fmt.bufPrint(&surface_buf, "{x}", .{@intFromPtr(surface)}) catch null;
+        self.clearPanmuxStatus(page, .{ .surface_id = surface_id });
         return true;
     }
 
     pub fn panmuxFinishRunningSurface(self: *Self, surface: *Surface) bool {
         const tab = ext.getAncestor(Tab, surface.as(gtk.Widget)) orelse return false;
         const page = self.private().tab_view.getPage(tab.as(gtk.Widget));
-        finishPanmuxRunning(page);
+        var tab_buf: [32]u8 = undefined;
+        const workspace_id = std.fmt.bufPrint(&tab_buf, "{x}", .{@intFromPtr(tab)}) catch return false;
+        var surface_buf: [32]u8 = undefined;
+        const surface_id = std.fmt.bufPrint(&surface_buf, "{x}", .{@intFromPtr(surface)}) catch return false;
+        self.panmuxStore().finishLegacySurfaceSession(workspace_id, surface_id);
+        self.refreshPanmuxPage(page);
+        return true;
+    }
+
+    pub fn panmuxListSessions(self: *Self, alloc: std.mem.Allocator, params: panmux_ipc.Params) ![]panmux_ipc.OwnedSessionInfo {
+        const page = self.resolvePanmuxPage(params) orelse return alloc.alloc(panmux_ipc.OwnedSessionInfo, 0);
+        var tab_buf: [32]u8 = undefined;
+        const workspace_id = panmuxWorkspaceIdForPage(page, &tab_buf) orelse return alloc.alloc(panmux_ipc.OwnedSessionInfo, 0);
+
+        var count: usize = 0;
+        for (self.panmuxStore().sessions()) |session| {
+            if (std.mem.eql(u8, session.workspace_id, workspace_id)) count += 1;
+        }
+
+        const sessions = try alloc.alloc(panmux_ipc.OwnedSessionInfo, count);
+        errdefer alloc.free(sessions);
+        var built: usize = 0;
+        errdefer {
+            for (sessions[0..built]) |*session| session.deinit(alloc);
+        }
+
+        for (self.panmuxStore().sessions()) |session| {
+            if (!std.mem.eql(u8, session.workspace_id, workspace_id)) continue;
+            sessions[built] = try panmuxSessionInfoFromState(alloc, session);
+            built += 1;
+        }
+
+        return sessions;
+    }
+
+    pub fn panmuxListAttention(self: *Self, alloc: std.mem.Allocator, params: panmux_ipc.Params) ![]panmux_ipc.OwnedAttentionInfo {
+        const page = self.resolvePanmuxPage(params) orelse return alloc.alloc(panmux_ipc.OwnedAttentionInfo, 0);
+        var tab_buf: [32]u8 = undefined;
+        const workspace_id = panmuxWorkspaceIdForPage(page, &tab_buf) orelse return alloc.alloc(panmux_ipc.OwnedAttentionInfo, 0);
+
+        var count: usize = 0;
+        for (self.panmuxStore().attentions()) |attention| {
+            if (std.mem.eql(u8, attention.workspace_id, workspace_id)) count += 1;
+        }
+
+        const attentions = try alloc.alloc(panmux_ipc.OwnedAttentionInfo, count);
+        errdefer alloc.free(attentions);
+        var built: usize = 0;
+        errdefer {
+            for (attentions[0..built]) |*attention| attention.deinit(alloc);
+        }
+
+        for (self.panmuxStore().attentions()) |attention| {
+            if (!std.mem.eql(u8, attention.workspace_id, workspace_id)) continue;
+            attentions[built] = try panmuxAttentionInfoFromState(alloc, attention);
+            built += 1;
+        }
+
+        return attentions;
+    }
+
+    pub fn panmuxAckAttention(self: *Self, params: panmux_ipc.Params) bool {
+        const attention_id = params.attention_id orelse return false;
+        if (!self.panmuxStore().ackAttention(attention_id)) return false;
+
+        const page = self.resolvePanmuxPage(params) orelse return true;
+        self.refreshPanmuxPage(page);
         return true;
     }
 
@@ -891,12 +962,12 @@ pub const Window = extern struct {
         page: *adw.TabPage,
         index: u32,
     ) !panmux_ipc.OwnedTabInfo {
-        _ = self;
         const child = page.getChild();
         const tab = gobject.ext.cast(Tab, child) orelse return error.InvalidTabPage;
         const surface = tab.getActiveSurface();
         const pwd = if (surface) |v| v.getPwd() else null;
-        const state = panmuxStateForPage(page);
+        const state = self.panmuxStateForPage(page);
+        const snapshot = self.panmuxWorkspaceSnapshotForPage(page);
 
         var info = panmux_ipc.OwnedTabInfo{
             .index = index,
@@ -908,6 +979,8 @@ pub const Window = extern struct {
             .selected = page.getSelected() != 0,
             .needs_attention = page.getNeedsAttention() != 0,
             .loading = page.getLoading() != 0,
+            .running_count = if (snapshot) |value| value.running_count else 0,
+            .unread_count = if (snapshot) |value| value.unread_count else 0,
         };
         errdefer info.deinit(alloc);
         return info;
@@ -997,50 +1070,95 @@ pub const Window = extern struct {
     }
 
     fn applyPanmuxStatus(self: *Self, page: *adw.TabPage, params: panmux_ipc.Params) void {
-        _ = self;
         const state = normalizedPanmuxState(params.state);
-        var keyword_buf: [64]u8 = undefined;
-        var tooltip_buf: [512]u8 = undefined;
+        var tab_buf: [32]u8 = undefined;
+        var surface_buf: [32]u8 = undefined;
+        const workspace_id = panmuxWorkspaceIdForPage(page, &tab_buf) orelse return;
+        const surface_id = panmuxSurfaceIdForPage(page, &surface_buf);
+        var session_buf: [96]u8 = undefined;
+        const session_id = panmuxSessionId(params, surface_id, &session_buf) orelse return;
+        const status_text = if (state.len > 0 and !std.mem.eql(u8, state, "running")) state else null;
+        const summary = params.body orelse params.title;
 
-        page.setLoading(@intFromBool(std.mem.eql(u8, state, "running")));
-        page.setKeyword(panmuxStatusKeyword(state, &keyword_buf));
-        page.setIndicatorTooltip(panmuxStatusTooltip(params, &tooltip_buf));
-        syncPanmuxIndicator(page);
+        self.panmuxStore().updateSession(.{
+            .workspace_id = workspace_id,
+            .tab_id = workspace_id,
+            .surface_id = surface_id,
+            .session_id = session_id,
+            .agent_type = panmuxAgentType(params),
+            .agent_label = panmuxAgentLabel(params),
+            .phase = panmux_state.phaseFromState(state),
+            .severity = panmux_state.severityFromState(state),
+            .status_text = status_text,
+            .turn_id = params.turn_id,
+            .summary = summary,
+        }) catch |err| {
+            log.warn("failed to update panmux store status err={}", .{err});
+            return;
+        };
+        self.refreshPanmuxPage(page);
     }
 
     fn applyPanmuxNotification(self: *Self, page: *adw.TabPage, params: panmux_ipc.Params) void {
+        var tab_buf: [32]u8 = undefined;
+        var surface_buf: [32]u8 = undefined;
+        const workspace_id = panmuxWorkspaceIdForPage(page, &tab_buf) orelse return;
+        const surface_id = panmuxSurfaceIdForPage(page, &surface_buf);
+        var session_buf: [96]u8 = undefined;
+        const session_id = panmuxSessionId(params, surface_id, &session_buf);
         const state = normalizedPanmuxState(params.state);
-        if (state.len == 0) return;
-        if (panmuxShouldPreserveRunningStatus(page.getLoading() != 0, state)) {
-            var keyword_buf: [64]u8 = undefined;
-            var tooltip_buf: [512]u8 = undefined;
-            page.setKeyword(panmuxStatusKeyword(state, &keyword_buf));
-            page.setIndicatorTooltip(panmuxStatusTooltip(params, &tooltip_buf));
-            return;
+
+        if (session_id) |resolved_session_id| {
+            self.panmuxStore().touchSession(.{
+                .workspace_id = workspace_id,
+                .tab_id = workspace_id,
+                .surface_id = surface_id,
+                .session_id = resolved_session_id,
+                .agent_type = panmuxAgentType(params),
+                .agent_label = panmuxAgentLabel(params),
+                .phase = .running,
+                .severity = panmux_state.severityFromState(state),
+                .status_text = if (state.len > 0 and !std.mem.eql(u8, state, "running")) state else null,
+                .turn_id = params.turn_id,
+                .summary = params.body orelse params.title,
+            }) catch |err| {
+                log.warn("failed to touch panmux session err={}", .{err});
+            };
         }
 
-        self.applyPanmuxStatus(page, params);
-    }
+        const attention_title = params.title orelse panmuxAgentLabel(params);
+        const attention_body = params.body orelse if (state.len > 0) state else null;
+        const should_raise_attention = (params.ack_required orelse true) and
+            (attention_title.len > 0 or attention_body != null);
 
-    fn clearPanmuxStatus(self: *Self, page: *adw.TabPage) void {
-        _ = self;
-        page.setLoading(@intFromBool(false));
-        page.setKeyword("");
-        page.setIndicatorIcon(null);
-        page.setIndicatorTooltip("");
-    }
-
-    fn finishPanmuxRunning(page: *adw.TabPage) void {
-        if (page.getLoading() == 0) return;
-
-        page.setLoading(@intFromBool(false));
-        if (keywordOrNull(page.getKeyword()) == null) {
-            page.setIndicatorIcon(null);
-            page.setIndicatorTooltip("");
-            return;
+        if (should_raise_attention) {
+            _ = self.panmuxStore().raiseAttention(.{
+                .workspace_id = workspace_id,
+                .session_id = session_id,
+                .kind = panmuxAttentionKind(params),
+                .severity = panmux_state.severityFromState(state),
+                .title = attention_title,
+                .body = attention_body,
+                .ack_required = params.ack_required orelse true,
+            }) catch |err| {
+                log.warn("failed to raise panmux attention err={}", .{err});
+            };
         }
 
-        syncPanmuxIndicator(page);
+        self.refreshPanmuxPage(page);
+    }
+
+    fn clearPanmuxStatus(self: *Self, page: *adw.TabPage, params: panmux_ipc.Params) void {
+        var tab_buf: [32]u8 = undefined;
+        var surface_buf: [32]u8 = undefined;
+        const workspace_id = panmuxWorkspaceIdForPage(page, &tab_buf) orelse return;
+        const fallback_surface_id = panmuxSurfaceIdForPage(page, &surface_buf);
+        self.panmuxStore().clearStatus(
+            workspace_id,
+            params.session_id,
+            params.surface_id orelse fallback_surface_id,
+        );
+        self.refreshPanmuxPage(page);
     }
 
     fn syncPanmuxIndicator(page: *adw.TabPage) void {
@@ -1098,28 +1216,259 @@ pub const Window = extern struct {
         return state.len == 0;
     }
 
-    fn panmuxStateForPage(page: *adw.TabPage) ?[]const u8 {
+    fn panmuxStateForPage(self: *Self, page: *adw.TabPage) ?[]const u8 {
+        if (self.panmuxWorkspaceSnapshotForPage(page)) |snapshot| {
+            return switch (snapshot.badge_kind) {
+                .empty => null,
+                .running => "running",
+                .info => "info",
+                .warning => "warning",
+                .@"error" => "error",
+                .other => snapshot.badge_label orelse "custom",
+            };
+        }
         if (page.getLoading() != 0) return "running";
         return publicPanmuxState(keywordOrNull(page.getKeyword()));
     }
 
     fn sidebarStatusKind(loading: bool, keyword: ?[]const u8) []const u8 {
         if (loading) return "running";
-        const state = sidebarOverlayKind(keyword);
+        const state = publicPanmuxState(keyword) orelse return "empty";
         if (state.len == 0) return "empty";
-        return state;
-    }
-
-    fn sidebarOverlayKind(keyword: ?[]const u8) []const u8 {
-        const state = publicPanmuxState(keyword) orelse return "";
         if (std.mem.eql(u8, state, "info")) return "info";
         if (std.mem.eql(u8, state, "warn") or std.mem.eql(u8, state, "warning")) return "warning";
         if (std.mem.eql(u8, state, "error")) return "error";
         return "other";
     }
 
+    fn sidebarOverlayKindForOverlay(kind: panmux_state.OverlayKind) []const u8 {
+        return switch (kind) {
+            .none => "",
+            .info => "info",
+            .warning => "warning",
+            .@"error" => "error",
+            .other => "other",
+        };
+    }
+
+    fn sidebarOverlayKind(self: *Self, page: ?*adw.TabPage) []const u8 {
+        const snapshot = self.panmuxWorkspaceSnapshotForPage(page orelse return "") orelse return "";
+        return sidebarOverlayKindForOverlay(snapshot.overlay_kind);
+    }
+
     fn sidebarStatusIs(loading: bool, keyword: ?[]const u8, expected: []const u8) bool {
         return std.mem.eql(u8, sidebarStatusKind(loading, keyword), expected);
+    }
+
+    fn panmuxStore(self: *Self) *panmux_state.Store {
+        _ = self;
+        return Application.default().panmuxStore();
+    }
+
+    fn panmuxWorkspaceSnapshotForPage(self: *Self, page: *adw.TabPage) ?panmux_state.WorkspaceSnapshot {
+        var tab_buf: [32]u8 = undefined;
+        const workspace_id = panmuxWorkspaceIdForPage(page, &tab_buf) orelse return null;
+        return self.panmuxStore().snapshotWorkspace(workspace_id);
+    }
+
+    fn refreshPanmuxPage(self: *Self, page: *adw.TabPage) void {
+        const snapshot = self.panmuxWorkspaceSnapshotForPage(page) orelse {
+            page.setLoading(@intFromBool(false));
+            page.setKeyword("");
+            page.setIndicatorIcon(null);
+            page.setIndicatorTooltip("");
+            if (self.private().tab_view.getSelectedPage() == page) self.refreshPanmuxInspector();
+            return;
+        };
+        self.applyPanmuxSnapshot(page, snapshot);
+        if (self.private().tab_view.getSelectedPage() == page) self.refreshPanmuxInspector();
+    }
+
+    fn applyPanmuxSnapshot(_: *Self, page: *adw.TabPage, snapshot: panmux_state.WorkspaceSnapshot) void {
+        var keyword_buf: [64]u8 = undefined;
+        var tooltip_buf: [512]u8 = undefined;
+        page.setLoading(@intFromBool(snapshot.badge_kind == .running));
+
+        const keyword_state = switch (snapshot.badge_kind) {
+            .empty, .running => "",
+            .info => "info",
+            .warning => "warning",
+            .@"error" => "error",
+            .other => snapshot.badge_label orelse "custom",
+        };
+        page.setKeyword(panmuxStatusKeyword(keyword_state, &keyword_buf));
+        const tooltip = if (snapshot.tooltip) |value|
+            std.fmt.bufPrintZ(&tooltip_buf, "{s}", .{value}) catch ""
+        else
+            "";
+        page.setIndicatorTooltip(tooltip);
+        syncPanmuxIndicator(page);
+    }
+
+    fn refreshPanmuxInspector(self: *Self) void {
+        const priv = self.private();
+        const page = priv.tab_view.getSelectedPage() orelse {
+            priv.panmux_detail_title.setLabel("Workspace Activity");
+            priv.panmux_detail_summary.setLabel("No workspace selected.");
+            self.clearStringList(priv.panmux_session_source);
+            self.clearStringList(priv.panmux_attention_source);
+            priv.panmux_session_source.append("No sessions.");
+            priv.panmux_attention_source.append("No notifications.");
+            priv.panmux_ack_button.as(gtk.Widget).setSensitive(0);
+            return;
+        };
+
+        const snapshot = self.panmuxWorkspaceSnapshotForPage(page) orelse {
+            priv.panmux_detail_title.setLabel(page.getTitle());
+            priv.panmux_detail_summary.setLabel("No agent activity for this workspace yet.");
+            self.clearStringList(priv.panmux_session_source);
+            self.clearStringList(priv.panmux_attention_source);
+            priv.panmux_session_source.append("No sessions.");
+            priv.panmux_attention_source.append("No notifications.");
+            priv.panmux_ack_button.as(gtk.Widget).setSensitive(0);
+            return;
+        };
+
+        priv.panmux_detail_title.setLabel(page.getTitle());
+        {
+            var summary_buf: [256]u8 = undefined;
+            const summary = std.fmt.bufPrintZ(
+                &summary_buf,
+                "{} running, {} unread notifications",
+                .{ snapshot.running_count, snapshot.unread_count },
+            ) catch "Workspace activity";
+            priv.panmux_detail_summary.setLabel(summary);
+        }
+
+        self.populatePanmuxSessionStrings(snapshot.workspace_id, priv.panmux_session_source);
+        self.populatePanmuxAttentionStrings(snapshot.workspace_id, priv.panmux_attention_source);
+        priv.panmux_ack_button.as(gtk.Widget).setSensitive(@intFromBool(snapshot.unread_count > 0));
+    }
+
+    fn populatePanmuxSessionStrings(self: *Self, workspace_id: []const u8, source: *gtk.StringList) void {
+        self.clearStringList(source);
+
+        var count: usize = 0;
+        for (self.panmuxStore().sessions()) |session| {
+            if (!std.mem.eql(u8, session.workspace_id, workspace_id)) continue;
+            var buf: [512]u8 = undefined;
+            const line = std.fmt.bufPrintZ(
+                &buf,
+                "{s} | {s} | {s}",
+                .{
+                    session.agent_label,
+                    panmux_state.phaseText(session.phase),
+                    session.last_summary orelse session.status_text orelse "-",
+                },
+            ) catch continue;
+            source.append(line);
+            count += 1;
+        }
+
+        if (count == 0) source.append("No sessions.");
+    }
+
+    fn populatePanmuxAttentionStrings(self: *Self, workspace_id: []const u8, source: *gtk.StringList) void {
+        self.clearStringList(source);
+
+        var count: usize = 0;
+        for (self.panmuxStore().attentions()) |attention| {
+            if (!std.mem.eql(u8, attention.workspace_id, workspace_id)) continue;
+            var buf: [512]u8 = undefined;
+            const line = std.fmt.bufPrintZ(
+                &buf,
+                "{s} | {s}: {s}",
+                .{
+                    if (attention.acked_at_ms == null) "new" else "read",
+                    panmux_state.severityText(attention.severity),
+                    attention.body orelse attention.title,
+                },
+            ) catch continue;
+            source.append(line);
+            count += 1;
+        }
+
+        if (count == 0) source.append("No notifications.");
+    }
+
+    fn clearStringList(self: *Self, source: *gtk.StringList) void {
+        _ = self;
+        const model = source.as(gio.ListModel);
+        const count = model.getNItems();
+        if (count == 0) return;
+        source.splice(0, count, null);
+    }
+
+    fn panmuxAgentType(params: panmux_ipc.Params) panmux_state.AgentType {
+        if (params.agent_type) |value| return panmux_state.agentTypeFromText(value);
+        if (params.title) |title| {
+            if (std.mem.eql(u8, title, "Codex")) return .codex;
+        }
+        return .other;
+    }
+
+    fn panmuxAgentLabel(params: panmux_ipc.Params) []const u8 {
+        return params.agent_label orelse params.title orelse "Panmux";
+    }
+
+    fn panmuxAttentionKind(params: panmux_ipc.Params) panmux_state.AttentionKind {
+        if (params.title) |title| {
+            if (std.mem.eql(u8, title, "Codex")) return .turn_complete;
+        }
+        return .legacy_notify;
+    }
+
+    fn panmuxWorkspaceIdForPage(page: *adw.TabPage, buf: *[32]u8) ?[]const u8 {
+        const child = page.getChild();
+        const tab = gobject.ext.cast(Tab, child) orelse return null;
+        return std.fmt.bufPrint(buf, "{x}", .{@intFromPtr(tab)}) catch null;
+    }
+
+    fn panmuxSurfaceIdForPage(page: *adw.TabPage, buf: *[32]u8) ?[]const u8 {
+        const child = page.getChild();
+        const tab = gobject.ext.cast(Tab, child) orelse return null;
+        const surface = tab.getActiveSurface() orelse return null;
+        return std.fmt.bufPrint(buf, "{x}", .{@intFromPtr(surface)}) catch null;
+    }
+
+    fn panmuxSessionId(params: panmux_ipc.Params, surface_id: ?[]const u8, buf: *[96]u8) ?[]const u8 {
+        if (params.session_id) |session_id| return session_id;
+        const value = surface_id orelse return null;
+        return std.fmt.bufPrint(buf, "legacy:{s}", .{value}) catch null;
+    }
+
+    fn panmuxSessionInfoFromState(alloc: std.mem.Allocator, session: panmux_state.AgentSessionState) !panmux_ipc.OwnedSessionInfo {
+        var info = panmux_ipc.OwnedSessionInfo{
+            .workspace_id = try alloc.dupeZ(u8, session.workspace_id),
+            .session_id = try alloc.dupeZ(u8, session.session_id),
+            .agent_type = try alloc.dupeZ(u8, panmux_state.agentTypeText(session.agent_type)),
+            .agent_label = try alloc.dupeZ(u8, session.agent_label),
+            .phase = try alloc.dupeZ(u8, panmux_state.phaseText(session.phase)),
+            .severity = try alloc.dupeZ(u8, panmux_state.severityText(session.severity)),
+            .surface_id = if (session.surface_id) |value| try alloc.dupeZ(u8, value) else null,
+            .status_text = if (session.status_text) |value| try alloc.dupeZ(u8, value) else null,
+            .turn_id = if (session.turn_id) |value| try alloc.dupeZ(u8, value) else null,
+            .summary = if (session.last_summary) |value| try alloc.dupeZ(u8, value) else null,
+            .updated_at_ms = session.updated_at_ms,
+        };
+        errdefer info.deinit(alloc);
+        return info;
+    }
+
+    fn panmuxAttentionInfoFromState(alloc: std.mem.Allocator, attention: panmux_state.AttentionItem) !panmux_ipc.OwnedAttentionInfo {
+        var info = panmux_ipc.OwnedAttentionInfo{
+            .attention_id = try alloc.dupeZ(u8, attention.attention_id),
+            .workspace_id = try alloc.dupeZ(u8, attention.workspace_id),
+            .session_id = if (attention.session_id) |value| try alloc.dupeZ(u8, value) else null,
+            .severity = try alloc.dupeZ(u8, panmux_state.severityText(attention.severity)),
+            .title = try alloc.dupeZ(u8, attention.title),
+            .body = if (attention.body) |value| try alloc.dupeZ(u8, value) else null,
+            .ack_required = attention.ack_required,
+            .acked = attention.acked_at_ms != null,
+            .created_at_ms = attention.created_at_ms,
+        };
+        errdefer info.deinit(alloc);
+        return info;
     }
 
     fn panmuxStatusTooltip(params: panmux_ipc.Params, buf: []u8) [*:0]const u8 {
@@ -1697,6 +2046,51 @@ pub const Window = extern struct {
         return @intFromBool(pos < 9);
     }
 
+    fn closureSidebarRunningLabel(
+        self: *Self,
+        page: ?*adw.TabPage,
+    ) callconv(.c) [*:0]const u8 {
+        const snapshot = self.panmuxWorkspaceSnapshotForPage(page orelse return glib.ext.dupeZ(u8, "Run")) orelse
+            return glib.ext.dupeZ(u8, "Run");
+        if (snapshot.running_count <= 1) return glib.ext.dupeZ(u8, "Run");
+
+        var buf: [32]u8 = undefined;
+        const label = std.fmt.bufPrintZ(&buf, "{} Run", .{snapshot.running_count}) catch
+            return glib.ext.dupeZ(u8, "Run");
+        return glib.ext.dupeZ(u8, label);
+    }
+
+    fn closureSidebarOtherLabel(
+        self: *Self,
+        page: ?*adw.TabPage,
+    ) callconv(.c) [*:0]const u8 {
+        const snapshot = self.panmuxWorkspaceSnapshotForPage(page orelse return glib.ext.dupeZ(u8, "State")) orelse
+            return glib.ext.dupeZ(u8, "State");
+        return glib.ext.dupeZ(u8, snapshot.badge_label orelse "State");
+    }
+
+    fn closureSidebarUnreadCount(
+        self: *Self,
+        page: ?*adw.TabPage,
+    ) callconv(.c) [*:0]const u8 {
+        const snapshot = self.panmuxWorkspaceSnapshotForPage(page orelse return glib.ext.dupeZ(u8, "")) orelse
+            return glib.ext.dupeZ(u8, "");
+        if (snapshot.unread_count == 0) return glib.ext.dupeZ(u8, "");
+
+        var buf: [16]u8 = undefined;
+        const label = std.fmt.bufPrintZ(&buf, "{}", .{snapshot.unread_count}) catch
+            return glib.ext.dupeZ(u8, "");
+        return glib.ext.dupeZ(u8, label);
+    }
+
+    fn closureSidebarUnreadVisible(
+        self: *Self,
+        page: ?*adw.TabPage,
+    ) callconv(.c) c_int {
+        const snapshot = self.panmuxWorkspaceSnapshotForPage(page orelse return 0) orelse return 0;
+        return @intFromBool(snapshot.unread_count > 0);
+    }
+
     fn closureSidebarStatusIsRunning(
         _: *Self,
         loading: c_int,
@@ -1738,24 +2132,35 @@ pub const Window = extern struct {
     }
 
     fn closureSidebarOverlayIsInfo(
-        _: *Self,
-        keyword_: ?[*:0]const u8,
+        self: *Self,
+        _: ?[*:0]const u8,
+        page: ?*adw.TabPage,
     ) callconv(.c) c_int {
-        return @intFromBool(std.mem.eql(u8, sidebarOverlayKind(keywordOrNull(keyword_)), "info"));
+        return @intFromBool(std.mem.eql(u8, self.sidebarOverlayKind(page), "info"));
     }
 
     fn closureSidebarOverlayIsWarning(
-        _: *Self,
-        keyword_: ?[*:0]const u8,
+        self: *Self,
+        _: ?[*:0]const u8,
+        page: ?*adw.TabPage,
     ) callconv(.c) c_int {
-        return @intFromBool(std.mem.eql(u8, sidebarOverlayKind(keywordOrNull(keyword_)), "warning"));
+        return @intFromBool(std.mem.eql(u8, self.sidebarOverlayKind(page), "warning"));
     }
 
     fn closureSidebarOverlayIsError(
-        _: *Self,
-        keyword_: ?[*:0]const u8,
+        self: *Self,
+        _: ?[*:0]const u8,
+        page: ?*adw.TabPage,
     ) callconv(.c) c_int {
-        return @intFromBool(std.mem.eql(u8, sidebarOverlayKind(keywordOrNull(keyword_)), "error"));
+        return @intFromBool(std.mem.eql(u8, self.sidebarOverlayKind(page), "error"));
+    }
+
+    fn panmuxAckAllAttention(_: *gtk.Button, self: *Self) callconv(.c) void {
+        const page = self.private().tab_view.getSelectedPage() orelse return;
+        var tab_buf: [32]u8 = undefined;
+        const workspace_id = panmuxWorkspaceIdForPage(page, &tab_buf) orelse return;
+        _ = self.panmuxStore().ackWorkspaceAttention(workspace_id);
+        self.refreshPanmuxPage(page);
     }
 
     //---------------------------------------------------------------
@@ -2017,6 +2422,7 @@ pub const Window = extern struct {
         // If the tab was previously marked as needing attention
         // (e.g. due to a bell character), we now unmark that
         page.setNeedsAttention(@intFromBool(false));
+        self.refreshPanmuxPage(page);
         self.focusActiveSurface();
     }
 
@@ -2038,6 +2444,15 @@ pub const Window = extern struct {
             self,
             .{},
         );
+
+        var tab_buf: [32]u8 = undefined;
+        const workspace_id = std.fmt.bufPrint(&tab_buf, "{x}", .{@intFromPtr(tab)}) catch null;
+        if (workspace_id) |id| {
+            self.panmuxStore().ensureWorkspace(id, id) catch |err| {
+                log.warn("failed to register panmux workspace err={}", .{err});
+            };
+            self.refreshPanmuxPage(page);
+        }
 
         // Attach listeners for the surface.
         //
@@ -2086,6 +2501,11 @@ pub const Window = extern struct {
         if (tab.getSurfaceTree()) |tree| {
             self.disconnectSurfaceHandlers(tree);
         }
+
+        var tab_buf: [32]u8 = undefined;
+        const workspace_id = std.fmt.bufPrint(&tab_buf, "{x}", .{@intFromPtr(tab)}) catch return;
+        self.panmuxStore().forgetWorkspace(workspace_id);
+        self.refreshPanmuxInspector();
     }
 
     fn tabViewCreateWindow(
@@ -2664,6 +3084,11 @@ pub const Window = extern struct {
             // Bindings
             class.bindTemplateChildPrivate("tab_overview", .{});
             class.bindTemplateChildPrivate("sidebar", .{});
+            class.bindTemplateChildPrivate("panmux_detail_title", .{});
+            class.bindTemplateChildPrivate("panmux_detail_summary", .{});
+            class.bindTemplateChildPrivate("panmux_ack_button", .{});
+            class.bindTemplateChildPrivate("panmux_session_source", .{});
+            class.bindTemplateChildPrivate("panmux_attention_source", .{});
             class.bindTemplateChildPrivate("tab_bar", .{});
             class.bindTemplateChildPrivate("tab_view", .{});
             class.bindTemplateChildPrivate("toolbar", .{});
@@ -2693,6 +3118,10 @@ pub const Window = extern struct {
             class.bindTemplateCallback("sidebar_cwd", &closureSidebarCwd);
             class.bindTemplateCallback("sidebar_hint", &closureSidebarHint);
             class.bindTemplateCallback("sidebar_hint_visible", &closureSidebarHintVisible);
+            class.bindTemplateCallback("sidebar_running_label", &closureSidebarRunningLabel);
+            class.bindTemplateCallback("sidebar_other_label", &closureSidebarOtherLabel);
+            class.bindTemplateCallback("sidebar_unread_count", &closureSidebarUnreadCount);
+            class.bindTemplateCallback("sidebar_unread_visible", &closureSidebarUnreadVisible);
             class.bindTemplateCallback("sidebar_status_is_running", &closureSidebarStatusIsRunning);
             class.bindTemplateCallback("sidebar_status_is_info", &closureSidebarStatusIsInfo);
             class.bindTemplateCallback("sidebar_status_is_warning", &closureSidebarStatusIsWarning);
@@ -2701,6 +3130,7 @@ pub const Window = extern struct {
             class.bindTemplateCallback("sidebar_overlay_is_info", &closureSidebarOverlayIsInfo);
             class.bindTemplateCallback("sidebar_overlay_is_warning", &closureSidebarOverlayIsWarning);
             class.bindTemplateCallback("sidebar_overlay_is_error", &closureSidebarOverlayIsError);
+            class.bindTemplateCallback("panmux_ack_all_attention", &panmuxAckAllAttention);
             class.bindTemplateCallback("titlebar_style_is_tabs", &closureTitlebarStyleIsTab);
             class.bindTemplateCallback("computed_subtitle", &closureSubtitle);
 
@@ -2736,10 +3166,10 @@ test "sidebar status helpers agree on visibility" {
     try std.testing.expect(Window.sidebarStatusIs(false, "info", "info"));
     try std.testing.expect(Window.sidebarStatusIs(false, "warning", "warning"));
     try std.testing.expect(!Window.sidebarStatusIs(false, "warning", "info"));
-    try std.testing.expectEqualStrings("info", Window.sidebarOverlayKind("info"));
-    try std.testing.expectEqualStrings("warning", Window.sidebarOverlayKind("warning"));
-    try std.testing.expectEqualStrings("error", Window.sidebarOverlayKind("error"));
-    try std.testing.expectEqualStrings("", Window.sidebarOverlayKind(null));
+    try std.testing.expectEqualStrings("info", Window.sidebarOverlayKindForOverlay(.info));
+    try std.testing.expectEqualStrings("warning", Window.sidebarOverlayKindForOverlay(.warning));
+    try std.testing.expectEqualStrings("error", Window.sidebarOverlayKindForOverlay(.@"error"));
+    try std.testing.expectEqualStrings("", Window.sidebarOverlayKindForOverlay(.none));
 }
 
 test "panmux desktop notification maps pong to plain info" {
