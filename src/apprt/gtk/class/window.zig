@@ -266,9 +266,11 @@ pub const Window = extern struct {
         tab_overview: *adw.TabOverview,
         sidebar: *gtk.ListView,
         panmux_detail_title: *gtk.Label,
+        panmux_detail_status: *gtk.Label,
         panmux_detail_summary: *gtk.Label,
+        panmux_attention_title: *gtk.Label,
+        panmux_attention_scroller: *gtk.ScrolledWindow,
         panmux_ack_button: *gtk.Button,
-        panmux_session_source: *gtk.StringList,
         panmux_attention_source: *gtk.StringList,
         tab_bar: *adw.TabBar,
         tab_view: *adw.TabView,
@@ -1325,85 +1327,160 @@ pub const Window = extern struct {
 
         const workflow = self.panmuxWindowWorkflowSnapshot();
         if (workflow.active_count == 0) {
-            priv.panmux_detail_summary.setLabel("No active Codex agents in this window.");
-            self.clearStringList(priv.panmux_session_source);
+            priv.panmux_detail_status.setLabel("No active agents");
+            priv.panmux_detail_summary.setLabel("Start Codex in this window to monitor it here.");
             self.clearStringList(priv.panmux_attention_source);
-            priv.panmux_session_source.append("No active agents.");
-            priv.panmux_attention_source.append("Nothing needs input.");
-            priv.panmux_ack_button.as(gtk.Widget).setSensitive(0);
+            self.setPanmuxActionQueueVisible(false);
+            return;
+        }
+
+        if (workflow.needs_input_count == 0) {
+            var status_buf: [64]u8 = undefined;
+            const status = if (workflow.running_count == 1)
+                "1 agent running"
+            else
+                std.fmt.bufPrintZ(&status_buf, "{} agents running", .{workflow.running_count}) catch "Agents running";
+            priv.panmux_detail_status.setLabel(status);
+            priv.panmux_detail_summary.setLabel("No action needed.");
+            self.clearStringList(priv.panmux_attention_source);
+            self.setPanmuxActionQueueVisible(false);
             return;
         }
 
         {
-            var summary_buf: [256]u8 = undefined;
-            const summary = if (workflow.needs_input_count > 0)
-                std.fmt.bufPrintZ(
-                    &summary_buf,
-                    "{} needs input, {} agents active",
-                    .{ workflow.needs_input_count, workflow.active_count },
-                ) catch "Codex workflow"
+            var status_buf: [64]u8 = undefined;
+            const status = if (workflow.needs_input_count == 1)
+                "1 agent needs input"
             else
                 std.fmt.bufPrintZ(
-                    &summary_buf,
-                    "{} agents running",
-                    .{workflow.running_count},
-                ) catch "Codex workflow";
+                    &status_buf,
+                    "{} agents need input",
+                    .{workflow.needs_input_count},
+                ) catch "Agents need input";
+            priv.panmux_detail_status.setLabel(status);
+        }
+
+        {
+            var summary_buf: [160]u8 = undefined;
+            const queue_count = self.populatePanmuxActionQueueStrings(priv.panmux_attention_source);
+            const summary = self.panmuxNeedsInputSummary(queue_count, workflow.running_count, &summary_buf);
             priv.panmux_detail_summary.setLabel(summary);
+            self.setPanmuxActionQueueVisible(queue_count > 0);
         }
-
-        self.populatePanmuxSessionStrings(priv.panmux_session_source);
-        self.populatePanmuxNeedsInputStrings(priv.panmux_attention_source);
-        priv.panmux_ack_button.as(gtk.Widget).setSensitive(@intFromBool(workflow.needs_input_count > 0));
     }
 
-    fn populatePanmuxSessionStrings(self: *Self, source: *gtk.StringList) void {
-        self.clearStringList(source);
-
-        var count: usize = 0;
-        for (self.panmuxStore().sessions()) |session| {
-            if (session.agent_type != .codex) continue;
-            if (!panmux_state.isSessionActive(session.phase)) continue;
-            if (!self.panmuxWindowHasWorkspace(session.workspace_id)) continue;
-            var buf: [512]u8 = undefined;
-            const line = std.fmt.bufPrintZ(
-                &buf,
-                "{s} | {s} | {s}",
-                .{
-                    self.panmuxWorkspaceTitle(session.workspace_id),
-                    self.panmuxCodexWorkflowState(session),
-                    session.last_summary orelse session.status_text orelse "-",
-                },
-            ) catch continue;
-            source.append(line);
-            count += 1;
-        }
-
-        if (count == 0) source.append("No active agents.");
+    fn setPanmuxActionQueueVisible(self: *Self, visible: bool) void {
+        const priv = self.private();
+        priv.panmux_attention_title.as(gtk.Widget).setVisible(@intFromBool(visible));
+        priv.panmux_attention_scroller.as(gtk.Widget).setVisible(@intFromBool(visible));
+        priv.panmux_ack_button.as(gtk.Widget).setVisible(@intFromBool(visible));
+        priv.panmux_ack_button.as(gtk.Widget).setSensitive(@intFromBool(visible));
     }
 
-    fn populatePanmuxNeedsInputStrings(self: *Self, source: *gtk.StringList) void {
+    fn populatePanmuxActionQueueStrings(self: *Self, source: *gtk.StringList) u32 {
         self.clearStringList(source);
 
-        var count: usize = 0;
-        for (self.panmuxStore().sessions()) |session| {
-            if (session.agent_type != .codex) continue;
-            if (!panmux_state.isSessionActive(session.phase)) continue;
-            if (!self.panmuxWindowHasWorkspace(session.workspace_id)) continue;
-            const attention = self.panmuxStore().latestUnreadAttentionForSession(session.session_id) orelse continue;
+        const n_pages = self.private().tab_view.getNPages();
+        var count: u32 = 0;
+        var i: c_int = 0;
+        while (i < n_pages) : (i += 1) {
+            const page = self.private().tab_view.getNthPage(i);
+            var tab_buf: [32]u8 = undefined;
+            const workspace_id = panmuxWorkspaceIdForPage(page, &tab_buf) orelse continue;
+            const detail = self.panmuxNeedsInputDetailForWorkspace(workspace_id) orelse continue;
+
+            var reference_buf: [64]u8 = undefined;
             var buf: [512]u8 = undefined;
             const line = std.fmt.bufPrintZ(
                 &buf,
                 "{s} | {s}",
                 .{
-                    self.panmuxWorkspaceTitle(session.workspace_id),
-                    attention.body orelse attention.title,
+                    self.panmuxWorkspaceReference(i, workspace_id, &reference_buf),
+                    detail,
                 },
             ) catch continue;
             source.append(line);
             count += 1;
         }
 
-        if (count == 0) source.append("Nothing needs input.");
+        return count;
+    }
+
+    fn panmuxNeedsInputSummary(
+        _: *Self,
+        queue_count: u32,
+        running_count: u32,
+        buf: *[160]u8,
+    ) [*:0]const u8 {
+        const queue_text = if (queue_count == 0)
+            "A tab in this window is waiting for you."
+        else if (queue_count == 1)
+            "The tab below is waiting for you."
+        else
+            "The tabs below are waiting for you.";
+        if (running_count == 0) return queue_text;
+
+        return std.fmt.bufPrintZ(
+            buf,
+            "{s} {} other agent{s} still running.",
+            .{
+                queue_text,
+                running_count,
+                if (running_count == 1) " is" else "s are",
+            },
+        ) catch queue_text;
+    }
+
+    fn panmuxLatestUnreadAttentionForWorkspace(
+        self: *Self,
+        workspace_id: []const u8,
+    ) ?*const panmux_state.AttentionItem {
+        var latest: ?*const panmux_state.AttentionItem = null;
+        for (self.panmuxStore().sessions()) |session| {
+            if (!std.mem.eql(u8, session.workspace_id, workspace_id)) continue;
+            if (session.agent_type != .codex) continue;
+            if (!panmux_state.isSessionActive(session.phase)) continue;
+
+            const attention = self.panmuxStore().latestUnreadAttentionForSession(session.session_id) orelse continue;
+            if (latest == null or attention.created_at_ms > latest.?.created_at_ms) {
+                latest = attention;
+            }
+        }
+
+        return latest;
+    }
+
+    fn panmuxNeedsInputDetailForWorkspace(self: *Self, workspace_id: []const u8) ?[]const u8 {
+        const attention = self.panmuxLatestUnreadAttentionForWorkspace(workspace_id) orelse return null;
+        if (attention.body) |body| {
+            const detail = panmuxInlineSummary(body);
+            if (detail.len > 0) return detail;
+        }
+
+        const title = panmuxInlineSummary(attention.title);
+        if (title.len > 0 and !std.mem.eql(u8, title, "Codex")) return title;
+        return "Needs input";
+    }
+
+    fn panmuxWorkspaceReference(
+        self: *Self,
+        position: c_int,
+        workspace_id: []const u8,
+        buf: *[64]u8,
+    ) []const u8 {
+        if (position >= 0 and position < 9) {
+            return std.fmt.bufPrint(buf, "Alt+{}", .{@as(c_uint, @intCast(position + 1))}) catch "Tab";
+        }
+
+        const title = trimAsciiWhitespace(self.panmuxWorkspaceTitle(workspace_id));
+        if (title.len > 0) return title;
+        return std.fmt.bufPrint(buf, "Tab {}", .{@as(c_uint, @intCast(position + 1))}) catch "Tab";
+    }
+
+    fn panmuxInlineSummary(value: []const u8) []const u8 {
+        const trimmed = trimAsciiWhitespace(value);
+        const first_line_end = std.mem.indexOfAny(u8, trimmed, "\r\n") orelse trimmed.len;
+        return trimAsciiWhitespace(trimmed[0..first_line_end]);
     }
 
     fn panmuxWindowWorkflowSnapshot(self: *Self) PanmuxWorkflowSnapshot {
@@ -1449,12 +1526,6 @@ pub const Window = extern struct {
         }
 
         return "Codex";
-    }
-
-    fn panmuxCodexWorkflowState(self: *Self, session: panmux_state.AgentSessionState) []const u8 {
-        if (self.panmuxStore().sessionNeedsInput(session.session_id)) return "Needs input";
-        if (session.phase == .starting) return "Starting";
-        return "Running";
     }
 
     fn consumePanmuxNeedsInputForPage(self: *Self, page: *adw.TabPage) void {
@@ -3175,9 +3246,11 @@ pub const Window = extern struct {
             class.bindTemplateChildPrivate("tab_overview", .{});
             class.bindTemplateChildPrivate("sidebar", .{});
             class.bindTemplateChildPrivate("panmux_detail_title", .{});
+            class.bindTemplateChildPrivate("panmux_detail_status", .{});
             class.bindTemplateChildPrivate("panmux_detail_summary", .{});
+            class.bindTemplateChildPrivate("panmux_attention_title", .{});
+            class.bindTemplateChildPrivate("panmux_attention_scroller", .{});
             class.bindTemplateChildPrivate("panmux_ack_button", .{});
-            class.bindTemplateChildPrivate("panmux_session_source", .{});
             class.bindTemplateChildPrivate("panmux_attention_source", .{});
             class.bindTemplateChildPrivate("tab_bar", .{});
             class.bindTemplateChildPrivate("tab_view", .{});

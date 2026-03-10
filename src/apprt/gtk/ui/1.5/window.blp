@@ -533,6 +533,19 @@ template $GhosttyWindow: Adw.ApplicationWindow {
                 label: _("Agent Workflow");
               }
 
+              Gtk.Label panmux_detail_status {
+                halign: start;
+                lines: 2;
+                wrap: true;
+                xalign: 0.0;
+
+                styles [
+                  "panmux-detail-status",
+                ]
+
+                label: _("No active agents");
+              }
+
               Gtk.Label panmux_detail_summary {
                 halign: start;
                 lines: 2;
@@ -545,18 +558,13 @@ template $GhosttyWindow: Adw.ApplicationWindow {
                   "panmux-detail-summary",
                 ]
 
-                label: _("Track active Codex agents in this window.");
+                label: _("Start Codex in this window to monitor it here.");
               }
 
-              Gtk.Button panmux_ack_button {
-                clicked => $panmux_ack_all_attention();
+              Gtk.Label panmux_attention_title {
                 halign: start;
-                label: _("Mark Needs Input Read");
-              }
-
-              Gtk.Label {
-                halign: start;
-                label: _("Agents");
+                label: _("Next Up");
+                visible: false;
                 xalign: 0.0;
 
                 styles [
@@ -565,62 +573,12 @@ template $GhosttyWindow: Adw.ApplicationWindow {
                 ]
               }
 
-              Gtk.ScrolledWindow {
+              Gtk.ScrolledWindow panmux_attention_scroller {
                 hscrollbar-policy: never;
-                min-content-height: 120;
-                vexpand: true;
-
-                Gtk.ListView {
-                  can-focus: false;
-                  enable-rubberband: false;
-                  show-separators: true;
-                  single-click-activate: false;
-
-                  model: Gtk.NoSelection {
-                    model: Gtk.StringList panmux_session_source {
-                    };
-                  };
-
-                  styles [
-                    "rich-list",
-                    "panmux-detail-list",
-                  ]
-
-                  factory: Gtk.BuilderListItemFactory {
-                    template Gtk.ListItem {
-                      child: Gtk.Label {
-                        ellipsize: end;
-                        label: bind template.item as <Gtk.StringObject>.string;
-                        selectable: true;
-                        wrap: false;
-                        xalign: 0.0;
-
-                        styles [
-                          "caption",
-                          "monospace",
-                          "panmux-detail-row",
-                        ]
-                      };
-                    }
-                  };
-                }
-              }
-
-              Gtk.Label {
-                halign: start;
-                label: _("Needs Input");
-                xalign: 0.0;
-
-                styles [
-                  "caption-heading",
-                  "panmux-detail-section",
-                ]
-              }
-
-              Gtk.ScrolledWindow {
-                hscrollbar-policy: never;
-                min-content-height: 120;
-                vexpand: true;
+                max-content-height: 176;
+                min-content-height: 0;
+                propagate-natural-height: true;
+                visible: false;
 
                 Gtk.ListView {
                   can-focus: false;
@@ -649,13 +607,19 @@ template $GhosttyWindow: Adw.ApplicationWindow {
 
                         styles [
                           "caption",
-                          "monospace",
                           "panmux-detail-row",
                         ]
                       };
                     }
                   };
                 }
+              }
+
+              Gtk.Button panmux_ack_button {
+                clicked => $panmux_ack_all_attention();
+                halign: start;
+                label: _("Clear Needs Input");
+                visible: false;
               }
             }
           }

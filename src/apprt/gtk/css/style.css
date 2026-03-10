@@ -319,6 +319,12 @@ label.resize-overlay {
   font-weight: 700;
 }
 
+.panmux-detail-status {
+  font-size: 1.08em;
+  font-weight: 700;
+  min-width: 0;
+}
+
 .panmux-detail-summary {
   min-width: 0;
 }
