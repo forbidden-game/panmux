@@ -1012,6 +1012,10 @@ pub const Window = extern struct {
         const state = normalizedPanmuxState(params.state);
         if (state.len == 0) return;
         if (panmuxShouldPreserveRunningStatus(page.getLoading() != 0, state)) {
+            var keyword_buf: [64]u8 = undefined;
+            var tooltip_buf: [512]u8 = undefined;
+            page.setKeyword(panmuxStatusKeyword(state, &keyword_buf));
+            page.setIndicatorTooltip(panmuxStatusTooltip(params, &tooltip_buf));
             return;
         }
 
@@ -1101,7 +1105,13 @@ pub const Window = extern struct {
 
     fn sidebarStatusKind(loading: bool, keyword: ?[]const u8) []const u8 {
         if (loading) return "running";
-        const state = publicPanmuxState(keyword) orelse return "empty";
+        const state = sidebarOverlayKind(keyword);
+        if (state.len == 0) return "empty";
+        return state;
+    }
+
+    fn sidebarOverlayKind(keyword: ?[]const u8) []const u8 {
+        const state = publicPanmuxState(keyword) orelse return "";
         if (std.mem.eql(u8, state, "info")) return "info";
         if (std.mem.eql(u8, state, "warn") or std.mem.eql(u8, state, "warning")) return "warning";
         if (std.mem.eql(u8, state, "error")) return "error";
@@ -1725,6 +1735,27 @@ pub const Window = extern struct {
         keyword_: ?[*:0]const u8,
     ) callconv(.c) c_int {
         return @intFromBool(sidebarStatusIs(loading != 0, keywordOrNull(keyword_), "other"));
+    }
+
+    fn closureSidebarOverlayIsInfo(
+        _: *Self,
+        keyword_: ?[*:0]const u8,
+    ) callconv(.c) c_int {
+        return @intFromBool(std.mem.eql(u8, sidebarOverlayKind(keywordOrNull(keyword_)), "info"));
+    }
+
+    fn closureSidebarOverlayIsWarning(
+        _: *Self,
+        keyword_: ?[*:0]const u8,
+    ) callconv(.c) c_int {
+        return @intFromBool(std.mem.eql(u8, sidebarOverlayKind(keywordOrNull(keyword_)), "warning"));
+    }
+
+    fn closureSidebarOverlayIsError(
+        _: *Self,
+        keyword_: ?[*:0]const u8,
+    ) callconv(.c) c_int {
+        return @intFromBool(std.mem.eql(u8, sidebarOverlayKind(keywordOrNull(keyword_)), "error"));
     }
 
     //---------------------------------------------------------------
@@ -2667,6 +2698,9 @@ pub const Window = extern struct {
             class.bindTemplateCallback("sidebar_status_is_warning", &closureSidebarStatusIsWarning);
             class.bindTemplateCallback("sidebar_status_is_error", &closureSidebarStatusIsError);
             class.bindTemplateCallback("sidebar_status_is_other", &closureSidebarStatusIsOther);
+            class.bindTemplateCallback("sidebar_overlay_is_info", &closureSidebarOverlayIsInfo);
+            class.bindTemplateCallback("sidebar_overlay_is_warning", &closureSidebarOverlayIsWarning);
+            class.bindTemplateCallback("sidebar_overlay_is_error", &closureSidebarOverlayIsError);
             class.bindTemplateCallback("titlebar_style_is_tabs", &closureTitlebarStyleIsTab);
             class.bindTemplateCallback("computed_subtitle", &closureSubtitle);
 
@@ -2702,6 +2736,10 @@ test "sidebar status helpers agree on visibility" {
     try std.testing.expect(Window.sidebarStatusIs(false, "info", "info"));
     try std.testing.expect(Window.sidebarStatusIs(false, "warning", "warning"));
     try std.testing.expect(!Window.sidebarStatusIs(false, "warning", "info"));
+    try std.testing.expectEqualStrings("info", Window.sidebarOverlayKind("info"));
+    try std.testing.expectEqualStrings("warning", Window.sidebarOverlayKind("warning"));
+    try std.testing.expectEqualStrings("error", Window.sidebarOverlayKind("error"));
+    try std.testing.expectEqualStrings("", Window.sidebarOverlayKind(null));
 }
 
 test "panmux desktop notification maps pong to plain info" {
