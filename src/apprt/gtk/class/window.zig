@@ -1017,6 +1017,7 @@ pub const Window = extern struct {
 
     fn applyPanmuxNotification(self: *Self, page: *adw.TabPage, params: panmux_ipc.Params) void {
         const state = normalizedPanmuxState(params.state);
+        if (state.len == 0) return;
         if (panmuxShouldPreserveRunningStatus(page.getLoading() != 0, state)) {
             return;
         }
@@ -2673,4 +2674,19 @@ test "panmux desktop notification maps pong to plain info" {
     const params = Window.desktopNotificationPanmuxParams("", "pong");
     try std.testing.expectEqualStrings("info", params.state.?);
     try std.testing.expectEqualStrings("info", Window.publicPanmuxState(params.state).?);
+}
+
+test "panmux running status is preserved across notifications" {
+    try std.testing.expect(Window.panmuxShouldPreserveRunningStatus(true, ""));
+    try std.testing.expect(Window.panmuxShouldPreserveRunningStatus(true, "info"));
+    try std.testing.expect(Window.panmuxShouldPreserveRunningStatus(true, "warning"));
+    try std.testing.expect(!Window.panmuxShouldPreserveRunningStatus(true, "running"));
+    try std.testing.expect(!Window.panmuxShouldPreserveRunningStatus(false, "info"));
+}
+
+test "panmux attention is only for state-less notifications" {
+    try std.testing.expect(Window.panmuxShouldMarkNeedsAttention(""));
+    try std.testing.expect(!Window.panmuxShouldMarkNeedsAttention("running"));
+    try std.testing.expect(!Window.panmuxShouldMarkNeedsAttention("info"));
+    try std.testing.expect(!Window.panmuxShouldMarkNeedsAttention("warning"));
 }
