@@ -429,7 +429,7 @@ template $GhosttyWindow: Adw.ApplicationWindow {
                           hexpand: true;
                           valign: fill;
                           vexpand: true;
-                          visible: bind $sidebar_overlay_is_info(template.item as <Adw.TabPage>.indicator-tooltip, template.item as <Adw.TabPage>) as <bool>;
+                          visible: bind $sidebar_overlay_is_info(template.item as <Adw.TabPage>.loading, template.item as <Adw.TabPage>.keyword, template.item as <Adw.TabPage>) as <bool>;
 
                           styles [
                             "panmux-sidebar-state",
@@ -444,7 +444,7 @@ template $GhosttyWindow: Adw.ApplicationWindow {
                           hexpand: true;
                           valign: fill;
                           vexpand: true;
-                          visible: bind $sidebar_overlay_is_warning(template.item as <Adw.TabPage>.indicator-tooltip, template.item as <Adw.TabPage>) as <bool>;
+                          visible: bind $sidebar_overlay_is_warning(template.item as <Adw.TabPage>.loading, template.item as <Adw.TabPage>.keyword, template.item as <Adw.TabPage>) as <bool>;
 
                           styles [
                             "panmux-sidebar-state",
@@ -459,7 +459,7 @@ template $GhosttyWindow: Adw.ApplicationWindow {
                           hexpand: true;
                           valign: fill;
                           vexpand: true;
-                          visible: bind $sidebar_overlay_is_error(template.item as <Adw.TabPage>.indicator-tooltip, template.item as <Adw.TabPage>) as <bool>;
+                          visible: bind $sidebar_overlay_is_error(template.item as <Adw.TabPage>.loading, template.item as <Adw.TabPage>.keyword, template.item as <Adw.TabPage>) as <bool>;
 
                           styles [
                             "panmux-sidebar-state",

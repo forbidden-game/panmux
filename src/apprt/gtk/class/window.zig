@@ -868,6 +868,14 @@ pub const Window = extern struct {
         return true;
     }
 
+    pub fn panmuxConsumeNeedsInputSurface(self: *Self, surface: *Surface) bool {
+        const tab = ext.getAncestor(Tab, surface.as(gtk.Widget)) orelse return false;
+        const page = self.private().tab_view.getPage(tab.as(gtk.Widget));
+        self.consumePanmuxNeedsInputForPage(page);
+        self.refreshPanmuxPage(page);
+        return true;
+    }
+
     pub fn panmuxListSessions(self: *Self, alloc: std.mem.Allocator, params: panmux_ipc.Params) ![]panmux_ipc.OwnedSessionInfo {
         const page = self.resolvePanmuxPage(params) orelse return alloc.alloc(panmux_ipc.OwnedSessionInfo, 0);
         var tab_buf: [32]u8 = undefined;
@@ -2203,6 +2211,7 @@ pub const Window = extern struct {
 
     fn closureSidebarOverlayIsInfo(
         self: *Self,
+        _: c_int,
         _: ?[*:0]const u8,
         page: ?*adw.TabPage,
     ) callconv(.c) c_int {
@@ -2211,6 +2220,7 @@ pub const Window = extern struct {
 
     fn closureSidebarOverlayIsWarning(
         self: *Self,
+        _: c_int,
         _: ?[*:0]const u8,
         page: ?*adw.TabPage,
     ) callconv(.c) c_int {
@@ -2219,6 +2229,7 @@ pub const Window = extern struct {
 
     fn closureSidebarOverlayIsError(
         self: *Self,
+        _: c_int,
         _: ?[*:0]const u8,
         page: ?*adw.TabPage,
     ) callconv(.c) c_int {

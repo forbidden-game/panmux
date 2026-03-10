@@ -2786,6 +2786,10 @@ pub fn keyCallback(
             .stable => |v| .{ .write_stable = v },
             .alloc => |v| .{ .write_alloc = v },
         }, .unlocked);
+
+        if (comptime @hasDecl(@TypeOf(self.rt_surface.*), "panmuxInputActivity")) {
+            self.rt_surface.panmuxInputActivity();
+        }
     } else {
         // No valid request means that we didn't encode anything.
         return .ignored;

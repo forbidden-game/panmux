@@ -1192,6 +1192,26 @@ pub const Surface = extern struct {
         _ = window.panmuxFinishRunningSurface(self);
     }
 
+    pub fn panmuxInputActivity(self: *Self) void {
+        const window = ext.getAncestor(Window, self.as(gtk.Widget)) orelse return;
+        _ = window.panmuxConsumeNeedsInputSurface(self);
+    }
+
+    fn maybeConsumePanmuxNeedsInput(
+        self: *Self,
+        action: input.Action,
+        key: input.Key,
+        mods: input.Mods,
+    ) void {
+        switch (action) {
+            .press, .repeat => {},
+            .release => return,
+        }
+        if (key.modifier()) return;
+        if (mods.ctrl or mods.alt or mods.super) return;
+        self.panmuxInputActivity();
+    }
+
     fn markPanmuxCodexRunning(self: *Self) void {
         const window = ext.getAncestor(Window, self.as(gtk.Widget)) orelse return;
         var surface_buf: [32]u8 = undefined;
@@ -1537,6 +1557,8 @@ pub const Surface = extern struct {
             action,
             Application.default().winproto(),
         );
+
+        self.maybeConsumePanmuxNeedsInput(action, physical_key, mods);
 
         // Get our consumed modifiers
         const consumed_mods: input.Mods = consumed: {
@@ -4092,6 +4114,8 @@ const Clipboard = struct {
                 return;
             },
         };
+
+        self.panmuxInputActivity();
     }
 
     /// Get the specific type of clipboard for a widget.
