@@ -192,7 +192,7 @@ label.resize-overlay {
 }
 
 .panmux-sidebar {
-  padding: 10px 0;
+  padding: 10px 0 176px 0;
 }
 
 .panmux-sidebar row {
@@ -312,7 +312,12 @@ label.resize-overlay {
 }
 
 .panmux-detail {
-  background-color: rgba(255, 255, 255, 0.03);
+  background-color: rgba(255, 255, 255, 0.045);
+  border-radius: 14px;
+  outline-color: rgba(255, 255, 255, 0.14);
+  outline-offset: -1px;
+  outline-style: solid;
+  outline-width: 1px;
 }
 
 .panmux-detail-title {

@@ -154,359 +154,390 @@ template $GhosttyWindow: Adw.ApplicationWindow {
           visible: bind template.debug;
         }
 
-        Gtk.Box {
-          orientation: horizontal;
+        Gtk.Overlay {
+          hexpand: true;
+          vexpand: true;
 
-          Gtk.Box {
-            hexpand: false;
-            orientation: vertical;
-            vexpand: true;
-            width-request: 280;
+          child: Gtk.Box {
+            orientation: horizontal;
 
-            Gtk.ScrolledWindow {
-              can-focus: false;
+            Gtk.Box {
               hexpand: false;
-              hscrollbar-policy: never;
-              min-content-width: 240;
               vexpand: true;
               width-request: 280;
 
-              styles [
-                "panmux-sidebar-scroller",
-              ]
-
-              Gtk.ListView sidebar {
-                activate => $sidebar_activate();
+              Gtk.ScrolledWindow {
                 can-focus: false;
-                enable-rubberband: false;
                 hexpand: false;
-                show-separators: false;
-                single-click-activate: true;
+                hscrollbar-policy: never;
+                min-content-width: 240;
                 vexpand: true;
-
-                model: Gtk.NoSelection {
-                  model: bind tab_view.pages;
-                };
+                width-request: 280;
 
                 styles [
-                  "navigation-sidebar",
-                  "panmux-sidebar",
+                  "panmux-sidebar-scroller",
                 ]
 
-                factory: Gtk.BuilderListItemFactory {
-                  template Gtk.ListItem {
-                    child: Gtk.Box {
-                      margin-bottom: 3;
-                      margin-end: 8;
-                      margin-start: 8;
-                      margin-top: 3;
+                Gtk.ListView sidebar {
+                  activate => $sidebar_activate();
+                  can-focus: false;
+                  enable-rubberband: false;
+                  hexpand: false;
+                  show-separators: false;
+                  single-click-activate: true;
+                  vexpand: true;
 
-                      Gtk.Overlay {
-                        child: Gtk.Box {
-                          orientation: horizontal;
-                          spacing: 12;
-                          margin-bottom: 10;
-                          margin-end: 12;
-                          margin-start: 12;
-                          margin-top: 10;
+                  model: Gtk.NoSelection {
+                    model: bind tab_view.pages;
+                  };
 
-                          styles [
-                            "panmux-sidebar-row",
-                          ]
+                  styles [
+                    "navigation-sidebar",
+                    "panmux-sidebar",
+                  ]
 
-                          Gtk.Box {
-                            hexpand: true;
-                            orientation: vertical;
-                            spacing: 3;
-                            valign: center;
+                  factory: Gtk.BuilderListItemFactory {
+                    template Gtk.ListItem {
+                      child: Gtk.Box {
+                        margin-bottom: 3;
+                        margin-end: 8;
+                        margin-start: 8;
+                        margin-top: 3;
 
-                            Gtk.Label {
-                              ellipsize: end;
-                              halign: start;
-                              single-line-mode: true;
-                              wrap: false;
-                              xalign: 0.0;
-
-                              styles [
-                                "panmux-sidebar-title",
-                              ]
-
-                              label: bind template.item as <Adw.TabPage>.title;
-                            }
-
-                            Gtk.Label {
-                              ellipsize: middle;
-                              halign: start;
-                              single-line-mode: true;
-                              wrap: false;
-                              xalign: 0.0;
-
-                              styles [
-                                "caption",
-                                "dim-label",
-                                "panmux-sidebar-dir",
-                              ]
-
-                              label: bind $sidebar_cwd(template.item as <Adw.TabPage>.child as <$GhosttyTab>.active-surface as <$GhosttySurface>.pwd) as <string>;
-                            }
-                          }
-
-                          Gtk.Box {
-                            halign: end;
-                            hexpand: false;
-                            orientation: vertical;
-                            spacing: 4;
-                            valign: center;
+                        Gtk.Overlay {
+                          child: Gtk.Box {
+                            orientation: horizontal;
+                            spacing: 12;
+                            margin-bottom: 10;
+                            margin-end: 12;
+                            margin-start: 12;
+                            margin-top: 10;
 
                             styles [
-                              "panmux-sidebar-meta",
+                              "panmux-sidebar-row",
                             ]
 
                             Gtk.Box {
-                              halign: end;
-                              orientation: horizontal;
-                              spacing: 4;
-                              tooltip-text: bind template.item as <Adw.TabPage>.indicator-tooltip;
+                              hexpand: true;
+                              orientation: vertical;
+                              spacing: 3;
                               valign: center;
 
-                              styles [
-                                "panmux-sidebar-badge",
-                                "panmux-sidebar-badge-running",
-                              ]
+                              Gtk.Label {
+                                ellipsize: end;
+                                halign: start;
+                                single-line-mode: true;
+                                wrap: false;
+                                xalign: 0.0;
 
-                              visible: bind $sidebar_status_is_running(template.item as <Adw.TabPage>.loading, template.item as <Adw.TabPage>.keyword) as <bool>;
+                                styles [
+                                  "panmux-sidebar-title",
+                                ]
 
-                              Gtk.Spinner {
-                                height-request: 14;
-                                spinning: true;
-                                width-request: 14;
+                                label: bind template.item as <Adw.TabPage>.title;
                               }
 
                               Gtk.Label {
-                                label: bind $sidebar_running_label(template.item as <Adw.TabPage>) as <string>;
+                                ellipsize: middle;
+                                halign: start;
+                                single-line-mode: true;
                                 wrap: false;
+                                xalign: 0.0;
 
                                 styles [
                                   "caption",
-                                  "panmux-sidebar-badge-label",
+                                  "dim-label",
+                                  "panmux-sidebar-dir",
                                 ]
+
+                                label: bind $sidebar_cwd(template.item as <Adw.TabPage>.child as <$GhosttyTab>.active-surface as <$GhosttySurface>.pwd) as <string>;
                               }
                             }
 
                             Gtk.Box {
                               halign: end;
-                              orientation: horizontal;
+                              hexpand: false;
+                              orientation: vertical;
                               spacing: 4;
-                              tooltip-text: bind template.item as <Adw.TabPage>.indicator-tooltip;
                               valign: center;
-                              visible: bind $sidebar_status_is_info(template.item as <Adw.TabPage>.loading, template.item as <Adw.TabPage>.keyword) as <bool>;
 
                               styles [
-                                "panmux-sidebar-badge",
-                                "panmux-sidebar-badge-info",
+                                "panmux-sidebar-meta",
                               ]
 
-                              Gtk.Image {
-                                icon-name: "mail-unread-symbolic";
+                              Gtk.Box {
+                                halign: end;
+                                orientation: horizontal;
+                                spacing: 4;
+                                tooltip-text: bind template.item as <Adw.TabPage>.indicator-tooltip;
+                                valign: center;
+
+                                styles [
+                                  "panmux-sidebar-badge",
+                                  "panmux-sidebar-badge-running",
+                                ]
+
+                                visible: bind $sidebar_status_is_running(template.item as <Adw.TabPage>.loading, template.item as <Adw.TabPage>.keyword) as <bool>;
+
+                                Gtk.Spinner {
+                                  height-request: 14;
+                                  spinning: true;
+                                  width-request: 14;
+                                }
+
+                                Gtk.Label {
+                                  label: bind $sidebar_running_label(template.item as <Adw.TabPage>) as <string>;
+                                  wrap: false;
+
+                                  styles [
+                                    "caption",
+                                    "panmux-sidebar-badge-label",
+                                  ]
+                                }
+                              }
+
+                              Gtk.Box {
+                                halign: end;
+                                orientation: horizontal;
+                                spacing: 4;
+                                tooltip-text: bind template.item as <Adw.TabPage>.indicator-tooltip;
+                                valign: center;
+                                visible: bind $sidebar_status_is_info(template.item as <Adw.TabPage>.loading, template.item as <Adw.TabPage>.keyword) as <bool>;
+
+                                styles [
+                                  "panmux-sidebar-badge",
+                                  "panmux-sidebar-badge-info",
+                                ]
+
+                                Gtk.Image {
+                                  icon-name: "mail-unread-symbolic";
+                                }
+
+                                Gtk.Label {
+                                  label: _("Needs input");
+                                  wrap: false;
+
+                                  styles [
+                                    "caption",
+                                    "panmux-sidebar-badge-label",
+                                  ]
+                                }
+                              }
+
+                              Gtk.Box {
+                                halign: end;
+                                orientation: horizontal;
+                                spacing: 4;
+                                tooltip-text: bind template.item as <Adw.TabPage>.indicator-tooltip;
+                                valign: center;
+                                visible: bind $sidebar_status_is_warning(template.item as <Adw.TabPage>.loading, template.item as <Adw.TabPage>.keyword) as <bool>;
+
+                                styles [
+                                  "panmux-sidebar-badge",
+                                  "panmux-sidebar-badge-warning",
+                                ]
+
+                                Gtk.Image {
+                                  icon-name: "dialog-warning-symbolic";
+                                }
+
+                                Gtk.Label {
+                                  label: _("Warn");
+                                  wrap: false;
+
+                                  styles [
+                                    "caption",
+                                    "panmux-sidebar-badge-label",
+                                  ]
+                                }
+                              }
+
+                              Gtk.Box {
+                                halign: end;
+                                orientation: horizontal;
+                                spacing: 4;
+                                tooltip-text: bind template.item as <Adw.TabPage>.indicator-tooltip;
+                                valign: center;
+                                visible: bind $sidebar_status_is_error(template.item as <Adw.TabPage>.loading, template.item as <Adw.TabPage>.keyword) as <bool>;
+
+                                styles [
+                                  "panmux-sidebar-badge",
+                                  "panmux-sidebar-badge-error",
+                                ]
+
+                                Gtk.Image {
+                                  icon-name: "dialog-error-symbolic";
+                                }
+
+                                Gtk.Label {
+                                  label: _("Error");
+                                  wrap: false;
+
+                                  styles [
+                                    "caption",
+                                    "panmux-sidebar-badge-label",
+                                  ]
+                                }
+                              }
+
+                              Gtk.Box {
+                                halign: end;
+                                orientation: horizontal;
+                                spacing: 4;
+                                tooltip-text: bind template.item as <Adw.TabPage>.indicator-tooltip;
+                                valign: center;
+                                visible: bind $sidebar_status_is_other(template.item as <Adw.TabPage>.loading, template.item as <Adw.TabPage>.keyword) as <bool>;
+
+                                styles [
+                                  "panmux-sidebar-badge",
+                                  "panmux-sidebar-badge-other",
+                                ]
+
+                                Gtk.Image {
+                                  icon-name: "emblem-system-symbolic";
+                                }
+
+                                Gtk.Label {
+                                  label: bind $sidebar_other_label(template.item as <Adw.TabPage>) as <string>;
+                                  wrap: false;
+
+                                  styles [
+                                    "caption",
+                                    "panmux-sidebar-badge-label",
+                                  ]
+                                }
                               }
 
                               Gtk.Label {
-                                label: _("Needs input");
+                                halign: end;
+                                visible: bind $sidebar_hint_visible(template.position) as <bool>;
                                 wrap: false;
+                                xalign: 0.5;
 
                                 styles [
                                   "caption",
-                                  "panmux-sidebar-badge-label",
+                                  "dim-label",
+                                  "panmux-sidebar-shortcut",
                                 ]
+
+                                label: bind $sidebar_hint(template.position) as <string>;
                               }
                             }
+                          };
 
-                            Gtk.Box {
-                              halign: end;
-                              orientation: horizontal;
-                              spacing: 4;
-                              tooltip-text: bind template.item as <Adw.TabPage>.indicator-tooltip;
-                              valign: center;
-                              visible: bind $sidebar_status_is_warning(template.item as <Adw.TabPage>.loading, template.item as <Adw.TabPage>.keyword) as <bool>;
+                          [overlay]
+                          Gtk.Box {
+                            can-target: false;
+                            halign: fill;
+                            hexpand: true;
+                            valign: fill;
+                            vexpand: true;
+                            visible: bind $sidebar_overlay_is_info(template.item as <Adw.TabPage>.loading, template.item as <Adw.TabPage>.keyword, template.item as <Adw.TabPage>) as <bool>;
 
-                              styles [
-                                "panmux-sidebar-badge",
-                                "panmux-sidebar-badge-warning",
-                              ]
-
-                              Gtk.Image {
-                                icon-name: "dialog-warning-symbolic";
-                              }
-
-                              Gtk.Label {
-                                label: _("Warn");
-                                wrap: false;
-
-                                styles [
-                                  "caption",
-                                  "panmux-sidebar-badge-label",
-                                ]
-                              }
-                            }
-
-                            Gtk.Box {
-                              halign: end;
-                              orientation: horizontal;
-                              spacing: 4;
-                              tooltip-text: bind template.item as <Adw.TabPage>.indicator-tooltip;
-                              valign: center;
-                              visible: bind $sidebar_status_is_error(template.item as <Adw.TabPage>.loading, template.item as <Adw.TabPage>.keyword) as <bool>;
-
-                              styles [
-                                "panmux-sidebar-badge",
-                                "panmux-sidebar-badge-error",
-                              ]
-
-                              Gtk.Image {
-                                icon-name: "dialog-error-symbolic";
-                              }
-
-                              Gtk.Label {
-                                label: _("Error");
-                                wrap: false;
-
-                                styles [
-                                  "caption",
-                                  "panmux-sidebar-badge-label",
-                                ]
-                              }
-                            }
-
-                            Gtk.Box {
-                              halign: end;
-                              orientation: horizontal;
-                              spacing: 4;
-                              tooltip-text: bind template.item as <Adw.TabPage>.indicator-tooltip;
-                              valign: center;
-                              visible: bind $sidebar_status_is_other(template.item as <Adw.TabPage>.loading, template.item as <Adw.TabPage>.keyword) as <bool>;
-
-                              styles [
-                                "panmux-sidebar-badge",
-                                "panmux-sidebar-badge-other",
-                              ]
-
-                              Gtk.Image {
-                                icon-name: "emblem-system-symbolic";
-                              }
-
-                              Gtk.Label {
-                                label: bind $sidebar_other_label(template.item as <Adw.TabPage>) as <string>;
-                                wrap: false;
-
-                                styles [
-                                  "caption",
-                                  "panmux-sidebar-badge-label",
-                                ]
-                              }
-                            }
-
-                            Gtk.Label {
-                              halign: end;
-                              visible: bind $sidebar_hint_visible(template.position) as <bool>;
-                              wrap: false;
-                              xalign: 0.5;
-
-                              styles [
-                                "caption",
-                                "dim-label",
-                                "panmux-sidebar-shortcut",
-                              ]
-
-                              label: bind $sidebar_hint(template.position) as <string>;
-                            }
+                            styles [
+                              "panmux-sidebar-state",
+                              "panmux-sidebar-state-info",
+                            ]
                           }
-                        };
 
-                        [overlay]
-                        Gtk.Box {
-                          can-target: false;
-                          halign: fill;
-                          hexpand: true;
-                          valign: fill;
-                          vexpand: true;
-                          visible: bind $sidebar_overlay_is_info(template.item as <Adw.TabPage>.loading, template.item as <Adw.TabPage>.keyword, template.item as <Adw.TabPage>) as <bool>;
+                          [overlay]
+                          Gtk.Box {
+                            can-target: false;
+                            halign: fill;
+                            hexpand: true;
+                            valign: fill;
+                            vexpand: true;
+                            visible: bind $sidebar_overlay_is_warning(template.item as <Adw.TabPage>.loading, template.item as <Adw.TabPage>.keyword, template.item as <Adw.TabPage>) as <bool>;
 
-                          styles [
-                            "panmux-sidebar-state",
-                            "panmux-sidebar-state-info",
-                          ]
+                            styles [
+                              "panmux-sidebar-state",
+                              "panmux-sidebar-state-warning",
+                            ]
+                          }
+
+                          [overlay]
+                          Gtk.Box {
+                            can-target: false;
+                            halign: fill;
+                            hexpand: true;
+                            valign: fill;
+                            vexpand: true;
+                            visible: bind $sidebar_overlay_is_error(template.item as <Adw.TabPage>.loading, template.item as <Adw.TabPage>.keyword, template.item as <Adw.TabPage>) as <bool>;
+
+                            styles [
+                              "panmux-sidebar-state",
+                              "panmux-sidebar-state-error",
+                            ]
+                          }
+
+                          [overlay]
+                          Gtk.Box {
+                            can-target: false;
+                            halign: fill;
+                            hexpand: true;
+                            valign: fill;
+                            vexpand: true;
+                            visible: bind template.item as <Adw.TabPage>.selected;
+
+                            styles [
+                              "panmux-sidebar-selected",
+                            ]
+                          }
+
+                          [overlay]
+                          Gtk.Label {
+                            can-target: false;
+                            halign: end;
+                            label: bind $sidebar_unread_count(template.item as <Adw.TabPage>) as <string>;
+                            margin-end: 12;
+                            margin-top: 12;
+                            valign: start;
+                            visible: bind $sidebar_unread_visible(template.item as <Adw.TabPage>) as <bool>;
+
+                            styles [
+                              "caption",
+                              "panmux-sidebar-attention",
+                              "panmux-sidebar-attention-count",
+                            ]
+                          }
                         }
-
-                        [overlay]
-                        Gtk.Box {
-                          can-target: false;
-                          halign: fill;
-                          hexpand: true;
-                          valign: fill;
-                          vexpand: true;
-                          visible: bind $sidebar_overlay_is_warning(template.item as <Adw.TabPage>.loading, template.item as <Adw.TabPage>.keyword, template.item as <Adw.TabPage>) as <bool>;
-
-                          styles [
-                            "panmux-sidebar-state",
-                            "panmux-sidebar-state-warning",
-                          ]
-                        }
-
-                        [overlay]
-                        Gtk.Box {
-                          can-target: false;
-                          halign: fill;
-                          hexpand: true;
-                          valign: fill;
-                          vexpand: true;
-                          visible: bind $sidebar_overlay_is_error(template.item as <Adw.TabPage>.loading, template.item as <Adw.TabPage>.keyword, template.item as <Adw.TabPage>) as <bool>;
-
-                          styles [
-                            "panmux-sidebar-state",
-                            "panmux-sidebar-state-error",
-                          ]
-                        }
-
-                        [overlay]
-                        Gtk.Box {
-                          can-target: false;
-                          halign: fill;
-                          hexpand: true;
-                          valign: fill;
-                          vexpand: true;
-                          visible: bind template.item as <Adw.TabPage>.selected;
-
-                          styles [
-                            "panmux-sidebar-selected",
-                          ]
-                        }
-
-                        [overlay]
-                        Gtk.Label {
-                          can-target: false;
-                          halign: end;
-                          label: bind $sidebar_unread_count(template.item as <Adw.TabPage>) as <string>;
-                          margin-end: 12;
-                          margin-top: 12;
-                          valign: start;
-                          visible: bind $sidebar_unread_visible(template.item as <Adw.TabPage>) as <bool>;
-
-                          styles [
-                            "caption",
-                            "panmux-sidebar-attention",
-                            "panmux-sidebar-attention-count",
-                          ]
-                        }
-                      }
-                    };
-                  }
-                };
+                      };
+                    }
+                  };
+                }
               }
             }
 
             Gtk.Separator {
-              orientation: horizontal;
+              orientation: vertical;
             }
+
+            Adw.ToastOverlay toast_overlay {
+              hexpand: true;
+              vexpand: true;
+
+              Adw.TabView tab_view {
+                notify::n-pages => $notify_n_pages();
+                notify::selected-page => $notify_selected_page();
+                close-page => $close_page();
+                page-attached => $page_attached();
+                page-detached => $page_detached();
+                create-window => $tab_create_window();
+                setup-menu => $setup_tab_menu();
+                menu-model: tab_context_menu;
+                shortcuts: none;
+              }
+            }
+          };
+
+          [overlay]
+          Gtk.Box {
+            halign: start;
+            margin-bottom: 12;
+            margin-start: 12;
+            valign: end;
+            vexpand: false;
+            width-request: 320;
 
             Gtk.Box {
               orientation: vertical;
@@ -621,27 +652,6 @@ template $GhosttyWindow: Adw.ApplicationWindow {
                 label: _("Clear Needs Input");
                 visible: false;
               }
-            }
-          }
-
-          Gtk.Separator {
-            orientation: vertical;
-          }
-
-          Adw.ToastOverlay toast_overlay {
-            hexpand: true;
-            vexpand: true;
-
-            Adw.TabView tab_view {
-              notify::n-pages => $notify_n_pages();
-              notify::selected-page => $notify_selected_page();
-              close-page => $close_page();
-              page-attached => $page_attached();
-              page-detached => $page_detached();
-              create-window => $tab_create_window();
-              setup-menu => $setup_tab_menu();
-              menu-model: tab_context_menu;
-              shortcuts: none;
             }
           }
         }
