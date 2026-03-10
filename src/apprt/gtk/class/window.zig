@@ -265,6 +265,8 @@ pub const Window = extern struct {
         // Template bindings
         tab_overview: *adw.TabOverview,
         sidebar: *gtk.ListView,
+        panmux_detail_host: *gtk.Box,
+        panmux_detail_panel: *gtk.Box,
         panmux_detail_title: *gtk.Label,
         panmux_detail_status: *gtk.Label,
         panmux_detail_summary: *gtk.Label,
@@ -1287,6 +1289,16 @@ pub const Window = extern struct {
         needs_input_count: u32 = 0,
     };
 
+    const PanmuxInspectorMode = enum {
+        collapsed,
+        expanded,
+    };
+
+    const PanmuxActionQueueInfo = struct {
+        count: u32 = 0,
+        first_reference: ?[]const u8 = null,
+    };
+
     fn refreshPanmuxPage(self: *Self, page: *adw.TabPage) void {
         const snapshot = self.panmuxWorkspaceSnapshotForPage(page) orelse {
             page.setLoading(@intFromBool(false));
@@ -1327,61 +1339,95 @@ pub const Window = extern struct {
 
         const workflow = self.panmuxWindowWorkflowSnapshot();
         if (workflow.active_count == 0) {
-            priv.panmux_detail_status.setLabel("No active agents");
-            priv.panmux_detail_summary.setLabel("Start Codex in this window to monitor it here.");
             self.clearStringList(priv.panmux_attention_source);
+            self.setPanmuxInspectorVisible(false);
             self.setPanmuxActionQueueVisible(false);
+            self.setPanmuxAckVisible(false);
             return;
         }
 
+        self.setPanmuxInspectorVisible(true);
+
         if (workflow.needs_input_count == 0) {
+            self.setPanmuxInspectorMode(.collapsed);
             var status_buf: [64]u8 = undefined;
             const status = if (workflow.running_count == 1)
                 "1 agent running"
             else
                 std.fmt.bufPrintZ(&status_buf, "{} agents running", .{workflow.running_count}) catch "Agents running";
             priv.panmux_detail_status.setLabel(status);
-            priv.panmux_detail_summary.setLabel("No action needed.");
             self.clearStringList(priv.panmux_attention_source);
             self.setPanmuxActionQueueVisible(false);
+            self.setPanmuxAckVisible(false);
             return;
         }
 
         {
+            self.setPanmuxInspectorMode(.expanded);
+            var first_ref_buf: [64]u8 = undefined;
+            const queue = self.populatePanmuxActionQueueStrings(priv.panmux_attention_source, &first_ref_buf);
+            const waiting_tabs = if (queue.count > 0) queue.count else workflow.needs_input_count;
+
             var status_buf: [64]u8 = undefined;
-            const status = if (workflow.needs_input_count == 1)
-                "1 agent needs input"
+            const status = if (waiting_tabs == 1)
+                "1 tab needs input"
             else
                 std.fmt.bufPrintZ(
                     &status_buf,
-                    "{} agents need input",
-                    .{workflow.needs_input_count},
-                ) catch "Agents need input";
+                    "{} tabs need input",
+                    .{waiting_tabs},
+                ) catch "Tabs need input";
             priv.panmux_detail_status.setLabel(status);
-        }
 
-        {
             var summary_buf: [160]u8 = undefined;
-            const queue_count = self.populatePanmuxActionQueueStrings(priv.panmux_attention_source);
-            const summary = self.panmuxNeedsInputSummary(queue_count, workflow.running_count, &summary_buf);
+            const summary = if (queue.first_reference) |reference|
+                if (waiting_tabs == 1)
+                    std.fmt.bufPrintZ(&summary_buf, "{s} is waiting for you.", .{reference}) catch "A tab is waiting for you."
+                else
+                    std.fmt.bufPrintZ(&summary_buf, "Start with {s}.", .{reference}) catch "Start with the first waiting tab."
+            else
+                "A tab in this window is waiting for you.";
             priv.panmux_detail_summary.setLabel(summary);
-            self.setPanmuxActionQueueVisible(queue_count > 0);
+            self.setPanmuxActionQueueVisible(queue.count > 1);
+            self.setPanmuxAckVisible(waiting_tabs > 0);
         }
+    }
+
+    fn setPanmuxInspectorVisible(self: *Self, visible: bool) void {
+        self.private().panmux_detail_host.as(gtk.Widget).setVisible(@intFromBool(visible));
+    }
+
+    fn setPanmuxInspectorMode(self: *Self, mode: PanmuxInspectorMode) void {
+        const priv = self.private();
+        const panel = priv.panmux_detail_panel.as(gtk.Widget);
+        const expanded = mode == .expanded;
+        toggleWidgetCssClass(panel, "panmux-detail-expanded", expanded);
+        toggleWidgetCssClass(panel, "panmux-detail-collapsed", !expanded);
+        priv.panmux_detail_title.as(gtk.Widget).setVisible(@intFromBool(expanded));
+        priv.panmux_detail_summary.as(gtk.Widget).setVisible(@intFromBool(expanded));
     }
 
     fn setPanmuxActionQueueVisible(self: *Self, visible: bool) void {
         const priv = self.private();
         priv.panmux_attention_title.as(gtk.Widget).setVisible(@intFromBool(visible));
         priv.panmux_attention_scroller.as(gtk.Widget).setVisible(@intFromBool(visible));
+    }
+
+    fn setPanmuxAckVisible(self: *Self, visible: bool) void {
+        const priv = self.private();
         priv.panmux_ack_button.as(gtk.Widget).setVisible(@intFromBool(visible));
         priv.panmux_ack_button.as(gtk.Widget).setSensitive(@intFromBool(visible));
     }
 
-    fn populatePanmuxActionQueueStrings(self: *Self, source: *gtk.StringList) u32 {
+    fn populatePanmuxActionQueueStrings(
+        self: *Self,
+        source: *gtk.StringList,
+        first_reference_buf: *[64]u8,
+    ) PanmuxActionQueueInfo {
         self.clearStringList(source);
 
+        var info: PanmuxActionQueueInfo = .{};
         const n_pages = self.private().tab_view.getNPages();
-        var count: u32 = 0;
         var i: c_int = 0;
         while (i < n_pages) : (i += 1) {
             const page = self.private().tab_view.getNthPage(i);
@@ -1400,35 +1446,17 @@ pub const Window = extern struct {
                 },
             ) catch continue;
             source.append(line);
-            count += 1;
+            if (info.count == 0) {
+                info.first_reference = std.fmt.bufPrint(
+                    first_reference_buf,
+                    "{s}",
+                    .{self.panmuxWorkspaceReference(i, workspace_id, &reference_buf)},
+                ) catch null;
+            }
+            info.count += 1;
         }
 
-        return count;
-    }
-
-    fn panmuxNeedsInputSummary(
-        _: *Self,
-        queue_count: u32,
-        running_count: u32,
-        buf: *[160]u8,
-    ) [*:0]const u8 {
-        const queue_text = if (queue_count == 0)
-            "A tab in this window is waiting for you."
-        else if (queue_count == 1)
-            "The tab below is waiting for you."
-        else
-            "The tabs below are waiting for you.";
-        if (running_count == 0) return queue_text;
-
-        return std.fmt.bufPrintZ(
-            buf,
-            "{s} {} other agent{s} still running.",
-            .{
-                queue_text,
-                running_count,
-                if (running_count == 1) " is" else "s are",
-            },
-        ) catch queue_text;
+        return info;
     }
 
     fn panmuxLatestUnreadAttentionForWorkspace(
@@ -1660,6 +1688,10 @@ pub const Window = extern struct {
 
     fn toggleCssClass(self: *Self, class: [:0]const u8, value: bool) void {
         const widget = self.as(gtk.Widget);
+        toggleWidgetCssClass(widget, class, value);
+    }
+
+    fn toggleWidgetCssClass(widget: *gtk.Widget, class: [:0]const u8, value: bool) void {
         if (value)
             widget.addCssClass(class.ptr)
         else
@@ -3245,6 +3277,8 @@ pub const Window = extern struct {
             // Bindings
             class.bindTemplateChildPrivate("tab_overview", .{});
             class.bindTemplateChildPrivate("sidebar", .{});
+            class.bindTemplateChildPrivate("panmux_detail_host", .{});
+            class.bindTemplateChildPrivate("panmux_detail_panel", .{});
             class.bindTemplateChildPrivate("panmux_detail_title", .{});
             class.bindTemplateChildPrivate("panmux_detail_status", .{});
             class.bindTemplateChildPrivate("panmux_detail_summary", .{});

@@ -192,7 +192,7 @@ label.resize-overlay {
 }
 
 .panmux-sidebar {
-  padding: 10px 0 176px 0;
+  padding: 10px 0 72px 0;
 }
 
 .panmux-sidebar row {
@@ -312,7 +312,28 @@ label.resize-overlay {
 }
 
 .panmux-detail {
-  background-color: rgba(255, 255, 255, 0.045);
+  padding: 10px 12px;
+  transition:
+    background-color 180ms ease-out,
+    outline-color 180ms ease-out,
+    opacity 180ms ease-out;
+}
+
+.panmux-detail-title {
+  font-weight: 700;
+}
+
+.panmux-detail-collapsed {
+  background-color: rgba(255, 255, 255, 0.03);
+  border-radius: 12px;
+  outline-color: transparent;
+  outline-offset: -1px;
+  outline-style: solid;
+  outline-width: 1px;
+}
+
+.panmux-detail-expanded {
+  background-color: rgba(255, 255, 255, 0.05);
   border-radius: 14px;
   outline-color: rgba(255, 255, 255, 0.14);
   outline-offset: -1px;
@@ -320,18 +341,19 @@ label.resize-overlay {
   outline-width: 1px;
 }
 
-.panmux-detail-title {
-  font-weight: 700;
-}
-
 .panmux-detail-status {
   font-size: 1.08em;
   font-weight: 700;
+  line-height: 1.15;
   min-width: 0;
 }
 
 .panmux-detail-summary {
   min-width: 0;
+}
+
+.panmux-detail-collapsed .panmux-detail-status {
+  font-size: 0.98em;
 }
 
 .panmux-detail-section {

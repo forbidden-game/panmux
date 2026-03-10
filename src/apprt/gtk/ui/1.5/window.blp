@@ -531,29 +531,33 @@ template $GhosttyWindow: Adw.ApplicationWindow {
           };
 
           [overlay]
-          Gtk.Box {
+          Gtk.Box panmux_detail_host {
             halign: start;
-            margin-bottom: 12;
-            margin-start: 12;
+            margin-bottom: 4;
             valign: end;
             vexpand: false;
-            width-request: 320;
+            visible: false;
+            width-request: 280;
 
-            Gtk.Box {
+            Gtk.Box panmux_detail_panel {
+              halign: fill;
+              hexpand: true;
               orientation: vertical;
               spacing: 8;
-              margin-bottom: 12;
-              margin-end: 12;
-              margin-start: 12;
-              margin-top: 12;
+              margin-bottom: 8;
+              margin-end: 8;
+              margin-start: 8;
+              margin-top: 8;
 
               styles [
                 "panmux-detail",
+                "panmux-detail-collapsed",
               ]
 
               Gtk.Label panmux_detail_title {
                 halign: start;
                 wrap: false;
+                visible: false;
                 xalign: 0.0;
 
                 styles [
@@ -581,6 +585,7 @@ template $GhosttyWindow: Adw.ApplicationWindow {
                 halign: start;
                 lines: 2;
                 wrap: true;
+                visible: false;
                 xalign: 0.0;
 
                 styles [
