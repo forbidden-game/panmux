@@ -261,6 +261,13 @@ pub const Store = struct {
         const workspace = try self.ensureWorkspaceRecord(update.workspace_id, update.tab_id);
         workspace.last_event_at_ms = nowMs();
 
+        // For Codex, a fresh running update means the user has resumed the
+        // conversation, so any prior "needs input" marker for this session
+        // should be consumed immediately.
+        if (update.agent_type == .codex and update.phase == .running) {
+            _ = self.ackSessionAttention(update.session_id);
+        }
+
         const idx = try self.resolveSessionIndex(update);
         const session = &self.session_items.items[idx];
 
@@ -848,4 +855,47 @@ test "completed codex sessions do not keep a visible workspace badge" {
     });
 
     try std.testing.expectEqual(@as(?WorkspaceSnapshot, null), store.snapshotWorkspace("tab-a"));
+}
+
+test "codex running update consumes needs input for the session" {
+    var store = Store.init(std.testing.allocator);
+    defer store.deinit();
+
+    try store.updateSession(.{
+        .workspace_id = "tab-a",
+        .tab_id = "tab-a",
+        .surface_id = "surface-a",
+        .session_id = "session-a",
+        .agent_type = .codex,
+        .agent_label = "Codex",
+        .phase = .running,
+        .severity = .none,
+        .summary = "session running",
+    });
+
+    _ = try store.raiseAttention(.{
+        .workspace_id = "tab-a",
+        .session_id = "session-a",
+        .severity = .info,
+        .title = "Codex",
+        .body = "need your answer",
+        .ack_required = true,
+    });
+
+    try std.testing.expectEqual(@as(u32, 1), store.snapshotWorkspace("tab-a").?.unread_count);
+    try store.updateSession(.{
+        .workspace_id = "tab-a",
+        .tab_id = "tab-a",
+        .surface_id = "surface-a",
+        .session_id = "session-a",
+        .agent_type = .codex,
+        .agent_label = "Codex",
+        .phase = .running,
+        .severity = .none,
+        .summary = "running again",
+    });
+
+    const snapshot = store.snapshotWorkspace("tab-a").?;
+    try std.testing.expectEqual(@as(u32, 0), snapshot.unread_count);
+    try std.testing.expectEqual(BadgeKind.running, snapshot.badge_kind);
 }
