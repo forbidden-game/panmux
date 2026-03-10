@@ -256,6 +256,50 @@ template $GhosttyWindow: Adw.ApplicationWindow {
                             "panmux-sidebar-meta",
                           ]
 
+                          Gtk.Stack {
+                            halign: end;
+                            tooltip-text: bind template.item as <Adw.TabPage>.indicator-tooltip;
+                            valign: center;
+                            visible-child-name: bind $sidebar_status_kind(template.item as <Adw.TabPage>.loading, template.item as <Adw.TabPage>.keyword) as <string>;
+
+                            styles [
+                              "panmux-sidebar-status",
+                            ]
+
+                            Gtk.Box {
+                              height-request: 16;
+                              name: "empty";
+                              width-request: 16;
+                            }
+
+                            Gtk.Spinner {
+                              height-request: 16;
+                              name: "running";
+                              spinning: true;
+                              width-request: 16;
+                            }
+
+                            Gtk.Image {
+                              icon-name: "dialog-information-symbolic";
+                              name: "info";
+                            }
+
+                            Gtk.Image {
+                              icon-name: "dialog-warning-symbolic";
+                              name: "warning";
+                            }
+
+                            Gtk.Image {
+                              icon-name: "dialog-error-symbolic";
+                              name: "error";
+                            }
+
+                            Gtk.Image {
+                              icon-name: "emblem-system-symbolic";
+                              name: "other";
+                            }
+                          }
+
                           Gtk.Label {
                             halign: end;
                             visible: bind $sidebar_hint_visible(template.position) as <bool>;

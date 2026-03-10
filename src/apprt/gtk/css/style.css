@@ -233,6 +233,12 @@ label.resize-overlay {
   min-width: 0;
 }
 
+.panmux-sidebar-status {
+  min-height: 16px;
+  min-width: 16px;
+  opacity: 0.82;
+}
+
 .panmux-sidebar-shortcut {
   min-height: 0;
   background-color: rgba(255, 255, 255, 0.06);

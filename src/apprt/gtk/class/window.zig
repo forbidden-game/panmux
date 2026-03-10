@@ -33,14 +33,7 @@ const panmux_ipc = @import("../../../panmux_ipc.zig");
 const WeakRef = @import("../weak_ref.zig").WeakRef;
 
 const log = std.log.scoped(.gtk_ghostty_window);
-const panmux_codex_resume_state = "_panmux_codex_resume";
 const panmux_codex_done_state = "_panmux_codex_done";
-
-const PanmuxCodexPageState = enum {
-    none,
-    running,
-    info,
-};
 
 pub const Window = extern struct {
     const Self = @This();
@@ -265,10 +258,6 @@ pub const Window = extern struct {
         /// Tab page that the context menu was opened for.
         /// setup by `setup-menu`.
         context_menu_page: ?*adw.TabPage = null,
-
-        /// Per-page Codex lifecycle metadata. The visible page keyword remains
-        /// a plain public state; resumability is tracked here.
-        panmux_codex_states: std.AutoHashMapUnmanaged(*adw.TabPage, PanmuxCodexPageState) = .{},
 
         /// The selected page when the user presses on the tab bar.
         tab_bar_pressed_page: ?*adw.TabPage = null,
@@ -768,11 +757,11 @@ pub const Window = extern struct {
 
     pub fn panmuxNotify(self: *Self, params: panmux_ipc.Params) bool {
         const page = self.resolvePanmuxPage(params) orelse return false;
-        self.applyPanmuxStatus(page, params);
+        self.applyPanmuxNotification(page, params);
 
         const foreground = page.getSelected() != 0 and self.as(gtk.Window).isActive() != 0;
         const state = normalizedPanmuxState(params.state);
-        if (!foreground and !std.mem.eql(u8, state, "running")) {
+        if (!foreground and panmuxShouldMarkNeedsAttention(state)) {
             page.setNeedsAttention(@intFromBool(true));
         }
 
@@ -808,11 +797,11 @@ pub const Window = extern struct {
     }
 
     fn panmuxNotifyParamsForPage(self: *Self, page: *adw.TabPage, params: panmux_ipc.Params) bool {
-        self.applyPanmuxStatus(page, params);
+        self.applyPanmuxNotification(page, params);
 
         const foreground = page.getSelected() != 0 and self.as(gtk.Window).isActive() != 0;
         const state = normalizedPanmuxState(params.state);
-        if (!foreground and !std.mem.eql(u8, state, "running")) {
+        if (!foreground and panmuxShouldMarkNeedsAttention(state)) {
             page.setNeedsAttention(@intFromBool(true));
         }
 
@@ -853,13 +842,7 @@ pub const Window = extern struct {
     pub fn panmuxStateForSurface(self: *Self, surface: *Surface) ?[]const u8 {
         const tab = ext.getAncestor(Tab, surface.as(gtk.Widget)) orelse return null;
         const page = self.private().tab_view.getPage(tab.as(gtk.Widget));
-        return publicPanmuxState(keywordOrNull(page.getKeyword()));
-    }
-
-    pub fn panmuxResumeInfoSurface(self: *Self, surface: *Surface) bool {
-        const tab = ext.getAncestor(Tab, surface.as(gtk.Widget)) orelse return false;
-        const page = self.private().tab_view.getPage(tab.as(gtk.Widget));
-        return self.panmuxConsumeCodexInfoPage(page);
+        return panmuxStateForPage(page);
     }
 
     pub fn panmuxClearStatusSurface(self: *Self, surface: *Surface) bool {
@@ -869,19 +852,11 @@ pub const Window = extern struct {
         return true;
     }
 
-    fn panmuxConsumeCodexInfoPage(self: *Self, page: *adw.TabPage) bool {
-        if (self.panmuxCodexPageState(page) != .info) return false;
-        self.applyPanmuxStatus(page, .{
-            .title = "Codex",
-            .body = "session running",
-            .state = "running",
-        });
-        page.setNeedsAttention(@intFromBool(false));
+    pub fn panmuxFinishRunningSurface(self: *Self, surface: *Surface) bool {
+        const tab = ext.getAncestor(Tab, surface.as(gtk.Widget)) orelse return false;
+        const page = self.private().tab_view.getPage(tab.as(gtk.Widget));
+        finishPanmuxRunning(page);
         return true;
-    }
-
-    fn panmuxHandleCodexStatusSelected(self: *Self, page: *adw.TabPage) bool {
-        return self.panmuxConsumeCodexInfoPage(page);
     }
 
     fn resolvePanmuxPage(self: *Self, params: panmux_ipc.Params) ?*adw.TabPage {
@@ -922,7 +897,7 @@ pub const Window = extern struct {
         const tab = gobject.ext.cast(Tab, child) orelse return error.InvalidTabPage;
         const surface = tab.getActiveSurface();
         const pwd = if (surface) |v| v.getPwd() else null;
-        const state = publicPanmuxState(keywordOrNull(page.getKeyword()));
+        const state = panmuxStateForPage(page);
 
         var info = panmux_ipc.OwnedTabInfo{
             .index = index,
@@ -948,9 +923,6 @@ pub const Window = extern struct {
 
     fn normalizedPanmuxState(state: ?[]const u8) []const u8 {
         const value = state orelse return "";
-        if (std.mem.eql(u8, value, panmux_codex_resume_state)) {
-            return "info";
-        }
         if (std.mem.eql(u8, value, panmux_codex_done_state)) {
             return "info";
         }
@@ -1032,20 +1004,58 @@ pub const Window = extern struct {
     }
 
     fn applyPanmuxStatus(self: *Self, page: *adw.TabPage, params: panmux_ipc.Params) void {
-        self.setPanmuxCodexPageState(page, panmuxCodexPageStateForParams(params));
+        _ = self;
         const state = normalizedPanmuxState(params.state);
-        const running = std.mem.eql(u8, state, "running");
         var keyword_buf: [64]u8 = undefined;
         var tooltip_buf: [512]u8 = undefined;
 
-        page.setLoading(@intFromBool(running));
-        page.setKeyword(panmuxStatusKeyword(params, &keyword_buf));
+        page.setLoading(@intFromBool(std.mem.eql(u8, state, "running")));
+        page.setKeyword(panmuxStatusKeyword(state, &keyword_buf));
         page.setIndicatorTooltip(panmuxStatusTooltip(params, &tooltip_buf));
+        syncPanmuxIndicator(page);
+    }
 
-        if (running) {
+    fn applyPanmuxNotification(self: *Self, page: *adw.TabPage, params: panmux_ipc.Params) void {
+        const state = normalizedPanmuxState(params.state);
+        if (panmuxShouldPreserveRunningStatus(page.getLoading() != 0, state)) {
+            return;
+        }
+
+        self.applyPanmuxStatus(page, params);
+    }
+
+    fn clearPanmuxStatus(self: *Self, page: *adw.TabPage) void {
+        _ = self;
+        page.setLoading(@intFromBool(false));
+        page.setKeyword("");
+        page.setIndicatorIcon(null);
+        page.setIndicatorTooltip("");
+        page.setNeedsAttention(@intFromBool(false));
+    }
+
+    fn finishPanmuxRunning(page: *adw.TabPage) void {
+        if (page.getLoading() == 0) return;
+
+        page.setLoading(@intFromBool(false));
+        if (keywordOrNull(page.getKeyword()) == null) {
+            page.setIndicatorIcon(null);
+            page.setIndicatorTooltip("");
+            return;
+        }
+
+        syncPanmuxIndicator(page);
+    }
+
+    fn syncPanmuxIndicator(page: *adw.TabPage) void {
+        if (page.getLoading() != 0) {
             page.setIndicatorIcon(null);
             return;
         }
+
+        const state = publicPanmuxState(keywordOrNull(page.getKeyword())) orelse {
+            page.setIndicatorIcon(null);
+            return;
+        };
 
         const icon_name = panmuxIndicatorIconName(state) orelse {
             page.setIndicatorIcon(null);
@@ -1054,15 +1064,6 @@ pub const Window = extern struct {
         const icon = gio.ThemedIcon.new(icon_name);
         defer icon.unref();
         page.setIndicatorIcon(icon.as(gio.Icon));
-    }
-
-    fn clearPanmuxStatus(self: *Self, page: *adw.TabPage) void {
-        self.clearPanmuxCodexPageState(page);
-        page.setLoading(@intFromBool(false));
-        page.setIndicatorIcon(null);
-        page.setIndicatorTooltip("");
-        page.setKeyword("");
-        page.setNeedsAttention(@intFromBool(false));
     }
 
     fn panmuxIndicatorIconName(state: []const u8) ?[*:0]const u8 {
@@ -1074,14 +1075,44 @@ pub const Window = extern struct {
         return "emblem-system-symbolic";
     }
 
-    fn panmuxStatusKeyword(params: panmux_ipc.Params, buf: []u8) [*:0]const u8 {
-        const state = storedPanmuxState(params);
-        if (state.len == 0) return "";
-        return std.fmt.bufPrintZ(buf, "{s}", .{state}) catch "";
+    fn panmuxStatusKeyword(state: []const u8, buf: []u8) [*:0]const u8 {
+        if (std.mem.eql(u8, state, "running")) return "";
+        const stored = storedPanmuxState(state);
+        if (stored.len == 0) return "";
+        return std.fmt.bufPrintZ(buf, "{s}", .{stored}) catch "";
     }
 
-    fn storedPanmuxState(params: panmux_ipc.Params) []const u8 {
-        return normalizedPanmuxState(params.state);
+    fn storedPanmuxState(state: []const u8) []const u8 {
+        if (std.mem.eql(u8, state, "running")) return "";
+        if (state.len == 0) return "";
+        return state;
+    }
+
+    fn panmuxShouldPreserveRunningStatus(running: bool, state: []const u8) bool {
+        if (!running) return false;
+        return state.len == 0 or !std.mem.eql(u8, state, "running");
+    }
+
+    fn panmuxShouldMarkNeedsAttention(state: []const u8) bool {
+        // `needs-attention` is a secondary generic signal in libadwaita and
+        // visually overrides the primary tab status. Structured panmux states
+        // already have a spinner/icon, so only state-less notifications should
+        // escalate through attention.
+        return state.len == 0;
+    }
+
+    fn panmuxStateForPage(page: *adw.TabPage) ?[]const u8 {
+        if (page.getLoading() != 0) return "running";
+        return publicPanmuxState(keywordOrNull(page.getKeyword()));
+    }
+
+    fn sidebarStatusKind(loading: bool, keyword: ?[]const u8) []const u8 {
+        if (loading) return "running";
+        const state = publicPanmuxState(keyword) orelse return "empty";
+        if (std.mem.eql(u8, state, "info")) return "info";
+        if (std.mem.eql(u8, state, "warn") or std.mem.eql(u8, state, "warning")) return "warning";
+        if (std.mem.eql(u8, state, "error")) return "error";
+        return "other";
     }
 
     fn panmuxStatusTooltip(params: panmux_ipc.Params, buf: []u8) [*:0]const u8 {
@@ -1120,40 +1151,6 @@ pub const Window = extern struct {
 
         const msg = std.fmt.bufPrintZ(buf, "{s}", .{title}) catch return "Panmux";
         return msg;
-    }
-
-    fn panmuxCodexPageStateForParams(params: panmux_ipc.Params) PanmuxCodexPageState {
-        const raw_state = params.state orelse "";
-        const state = normalizedPanmuxState(params.state);
-        const title = params.title orelse "";
-
-        if (std.mem.eql(u8, raw_state, panmux_codex_done_state) or std.mem.eql(u8, raw_state, "done")) {
-            return .none;
-        }
-        if (!std.mem.eql(u8, title, "Codex")) return .none;
-        if (std.mem.eql(u8, state, "running")) return .running;
-        if (std.mem.eql(u8, state, "info")) return .info;
-        return .none;
-    }
-
-    fn panmuxCodexPageState(self: *Self, page: *adw.TabPage) PanmuxCodexPageState {
-        return self.private().panmux_codex_states.get(page) orelse .none;
-    }
-
-    fn setPanmuxCodexPageState(self: *Self, page: *adw.TabPage, state: PanmuxCodexPageState) void {
-        const priv = self.private();
-        if (state == .none) {
-            _ = priv.panmux_codex_states.remove(page);
-            return;
-        }
-
-        priv.panmux_codex_states.put(std.heap.c_allocator, page, state) catch |err| {
-            log.warn("failed to store panmux codex page state err={}", .{err});
-        };
-    }
-
-    fn clearPanmuxCodexPageState(self: *Self, page: *adw.TabPage) void {
-        _ = self.private().panmux_codex_states.remove(page);
     }
 
     fn toggleCssClass(self: *Self, class: [:0]const u8, value: bool) void {
@@ -1693,6 +1690,14 @@ pub const Window = extern struct {
         return @intFromBool(pos < 9);
     }
 
+    fn closureSidebarStatusKind(
+        _: *Self,
+        loading: c_int,
+        keyword_: ?[*:0]const u8,
+    ) callconv(.c) [*:0]const u8 {
+        return glib.ext.dupeZ(u8, sidebarStatusKind(loading != 0, keywordOrNull(keyword_)));
+    }
+
     //---------------------------------------------------------------
     // Virtual methods
 
@@ -1705,8 +1710,6 @@ pub const Window = extern struct {
             v.unref();
             priv.config = null;
         }
-
-        priv.panmux_codex_states.deinit(std.heap.c_allocator);
 
         priv.tab_bindings.setSource(null);
 
@@ -1954,7 +1957,6 @@ pub const Window = extern struct {
         // If the tab was previously marked as needing attention
         // (e.g. due to a bell character), we now unmark that
         page.setNeedsAttention(@intFromBool(false));
-        _ = self.panmuxHandleCodexStatusSelected(page);
         self.focusActiveSurface();
     }
 
@@ -2024,8 +2026,6 @@ pub const Window = extern struct {
         if (tab.getSurfaceTree()) |tree| {
             self.disconnectSurfaceHandlers(tree);
         }
-
-        self.clearPanmuxCodexPageState(page);
     }
 
     fn tabViewCreateWindow(
@@ -2094,7 +2094,6 @@ pub const Window = extern struct {
 
         const page = priv.tab_view.getNthPage(@intCast(pos));
         priv.tab_view.setSelectedPage(page);
-        _ = self.panmuxConsumeCodexInfoPage(page);
         self.focusActiveSurface();
     }
 
@@ -2121,7 +2120,6 @@ pub const Window = extern struct {
 
         const selected_page = priv.tab_view.getSelectedPage() orelse return;
         if (selected_page != pressed_page) return;
-        _ = self.panmuxConsumeCodexInfoPage(selected_page);
     }
 
     fn surfaceClipboardWrite(
@@ -2635,6 +2633,7 @@ pub const Window = extern struct {
             class.bindTemplateCallback("sidebar_cwd", &closureSidebarCwd);
             class.bindTemplateCallback("sidebar_hint", &closureSidebarHint);
             class.bindTemplateCallback("sidebar_hint_visible", &closureSidebarHintVisible);
+            class.bindTemplateCallback("sidebar_status_kind", &closureSidebarStatusKind);
             class.bindTemplateCallback("titlebar_style_is_tabs", &closureTitlebarStyleIsTab);
             class.bindTemplateCallback("computed_subtitle", &closureSubtitle);
 
@@ -2650,66 +2649,24 @@ pub const Window = extern struct {
 };
 
 test "panmux info states stay plain info" {
-    const turn_complete = Window.storedPanmuxState(.{
-        .title = "Codex",
-        .body = "turn complete",
-        .state = "info",
-    });
+    const turn_complete = Window.storedPanmuxState("info");
     try std.testing.expectEqualStrings("info", turn_complete);
 
-    const exited = Window.storedPanmuxState(.{
-        .title = "Codex",
-        .body = "session exited",
-        .state = "done",
-    });
+    const exited = Window.storedPanmuxState(Window.normalizedPanmuxState("done"));
     try std.testing.expectEqualStrings("info", exited);
     try std.testing.expectEqualStrings("info", Window.publicPanmuxState(exited).?);
 
-    try std.testing.expectEqualStrings("info", Window.publicPanmuxState(panmux_codex_resume_state).?);
     try std.testing.expectEqualStrings("info", Window.publicPanmuxState(panmux_codex_done_state).?);
 }
 
-test "panmux codex page state uses simple running info lifecycle" {
-    try std.testing.expectEqual(
-        PanmuxCodexPageState.running,
-        Window.panmuxCodexPageStateForParams(.{
-            .title = "Codex",
-            .body = "session running",
-            .state = "running",
-        }),
-    );
-    try std.testing.expectEqual(
-        PanmuxCodexPageState.info,
-        Window.panmuxCodexPageStateForParams(.{
-            .title = "Codex",
-            .body = "turn complete",
-            .state = "info",
-        }),
-    );
-    try std.testing.expectEqual(
-        PanmuxCodexPageState.info,
-        Window.panmuxCodexPageStateForParams(.{
-            .title = "Codex",
-            .body = "turn complete",
-            .state = panmux_codex_resume_state,
-        }),
-    );
-    try std.testing.expectEqual(
-        PanmuxCodexPageState.none,
-        Window.panmuxCodexPageStateForParams(.{
-            .title = "Codex",
-            .body = "session exited",
-            .state = panmux_codex_done_state,
-        }),
-    );
-    try std.testing.expectEqual(
-        PanmuxCodexPageState.none,
-        Window.panmuxCodexPageStateForParams(.{
-            .title = "Build",
-            .body = "done",
-            .state = "info",
-        }),
-    );
+test "panmux running is derived separately from stored status" {
+    try std.testing.expectEqualStrings("", Window.storedPanmuxState("running"));
+    try std.testing.expectEqualStrings("running", Window.sidebarStatusKind(true, null));
+    try std.testing.expectEqualStrings("info", Window.sidebarStatusKind(false, "info"));
+    try std.testing.expectEqualStrings("warning", Window.sidebarStatusKind(false, "warning"));
+    try std.testing.expectEqualStrings("error", Window.sidebarStatusKind(false, "error"));
+    try std.testing.expectEqualStrings("other", Window.sidebarStatusKind(false, "custom"));
+    try std.testing.expectEqualStrings("empty", Window.sidebarStatusKind(false, null));
 }
 
 test "panmux desktop notification maps pong to plain info" {

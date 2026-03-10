@@ -1189,12 +1189,7 @@ pub const Surface = extern struct {
         _ = exit_code;
 
         const window = ext.getAncestor(Window, self.as(gtk.Widget)) orelse return;
-        _ = window.panmuxClearStatusSurface(self);
-    }
-
-    fn panmuxResumeInfo(self: *Self) void {
-        const window = ext.getAncestor(Window, self.as(gtk.Widget)) orelse return;
-        _ = window.panmuxResumeInfoSurface(self);
+        _ = window.panmuxFinishRunningSurface(self);
     }
 
     fn markPanmuxCodexRunning(self: *Self) void {
@@ -1406,8 +1401,6 @@ pub const Surface = extern struct {
         const event = ec_key.as(gtk.EventController).getCurrentEvent() orelse return false;
         const key_event = gobject.ext.cast(gdk.KeyEvent, event) orelse return false;
         const priv = self.private();
-        if (action == .press) self.panmuxResumeInfo();
-
         // The block below is all related to input method handling. See the function
         // comment for some high level details and then the comments within
         // the block for more specifics.
@@ -2981,8 +2974,6 @@ pub const Surface = extern struct {
         self: *Self,
     ) callconv(.c) void {
         const event = gesture.as(gtk.EventController).getCurrentEvent() orelse return;
-        self.panmuxResumeInfo();
-
         // Bell stops ringing if any mouse button is pressed.
         self.setBellRinging(false);
 
@@ -3120,8 +3111,6 @@ pub const Surface = extern struct {
         const is_cursor_still = @abs(priv.cursor_pos.x - pos.x) < 1 and
             @abs(priv.cursor_pos.y - pos.y) < 1;
         if (is_cursor_still) return;
-        self.panmuxResumeInfo();
-
         // If we don't have focus, and we want it, grab it.
         if (priv.config) |config| {
             const gl_area_widget = priv.gl_area.as(gtk.Widget);
@@ -3190,8 +3179,6 @@ pub const Surface = extern struct {
     ) callconv(.c) c_int {
         const priv: *Private = self.private();
         const surface = priv.core_surface orelse return 0;
-        self.panmuxResumeInfo();
-
         // Multiply precision scrolls by 10 to get a better response from
         // touchpad scrolling
         const multiplier: f64 = if (priv.precision_scroll) 10.0 else 1.0;
@@ -3223,8 +3210,6 @@ pub const Surface = extern struct {
         self: *Self,
     ) callconv(.c) c_int {
         const priv: *Private = self.private();
-        self.panmuxResumeInfo();
-
         switch (ec.getUnit()) {
             .surface => {},
             .wheel => return @intFromBool(false),
