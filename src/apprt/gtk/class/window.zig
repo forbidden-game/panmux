@@ -1183,7 +1183,7 @@ pub const Window = extern struct {
 
     fn panmuxIndicatorIconName(state: []const u8) ?[*:0]const u8 {
         if (state.len == 0) return null;
-        if (std.mem.eql(u8, state, "info")) return "emblem-ok-symbolic";
+        if (std.mem.eql(u8, state, "info")) return "mail-unread-symbolic";
         if (std.mem.eql(u8, state, "error")) return "dialog-error-symbolic";
         if (std.mem.eql(u8, state, "warn")) return "dialog-warning-symbolic";
         if (std.mem.eql(u8, state, "warning")) return "dialog-warning-symbolic";
@@ -1271,17 +1271,23 @@ pub const Window = extern struct {
         return self.panmuxStore().snapshotWorkspace(workspace_id);
     }
 
+    const PanmuxWorkflowSnapshot = struct {
+        active_count: u32 = 0,
+        running_count: u32 = 0,
+        needs_input_count: u32 = 0,
+    };
+
     fn refreshPanmuxPage(self: *Self, page: *adw.TabPage) void {
         const snapshot = self.panmuxWorkspaceSnapshotForPage(page) orelse {
             page.setLoading(@intFromBool(false));
             page.setKeyword("");
             page.setIndicatorIcon(null);
             page.setIndicatorTooltip("");
-            if (self.private().tab_view.getSelectedPage() == page) self.refreshPanmuxInspector();
+            self.refreshPanmuxInspector();
             return;
         };
         self.applyPanmuxSnapshot(page, snapshot);
-        if (self.private().tab_view.getSelectedPage() == page) self.refreshPanmuxInspector();
+        self.refreshPanmuxInspector();
     }
 
     fn applyPanmuxSnapshot(_: *Self, page: *adw.TabPage, snapshot: panmux_state.WorkspaceSnapshot) void {
@@ -1307,57 +1313,56 @@ pub const Window = extern struct {
 
     fn refreshPanmuxInspector(self: *Self) void {
         const priv = self.private();
-        const page = priv.tab_view.getSelectedPage() orelse {
-            priv.panmux_detail_title.setLabel("Workspace Activity");
-            priv.panmux_detail_summary.setLabel("No workspace selected.");
+        priv.panmux_detail_title.setLabel("Agent Workflow");
+
+        const workflow = self.panmuxWindowWorkflowSnapshot();
+        if (workflow.active_count == 0) {
+            priv.panmux_detail_summary.setLabel("No active Codex agents in this window.");
             self.clearStringList(priv.panmux_session_source);
             self.clearStringList(priv.panmux_attention_source);
-            priv.panmux_session_source.append("No sessions.");
-            priv.panmux_attention_source.append("No notifications.");
+            priv.panmux_session_source.append("No active agents.");
+            priv.panmux_attention_source.append("Nothing needs input.");
             priv.panmux_ack_button.as(gtk.Widget).setSensitive(0);
             return;
-        };
+        }
 
-        const snapshot = self.panmuxWorkspaceSnapshotForPage(page) orelse {
-            priv.panmux_detail_title.setLabel(page.getTitle());
-            priv.panmux_detail_summary.setLabel("No agent activity for this workspace yet.");
-            self.clearStringList(priv.panmux_session_source);
-            self.clearStringList(priv.panmux_attention_source);
-            priv.panmux_session_source.append("No sessions.");
-            priv.panmux_attention_source.append("No notifications.");
-            priv.panmux_ack_button.as(gtk.Widget).setSensitive(0);
-            return;
-        };
-
-        priv.panmux_detail_title.setLabel(page.getTitle());
         {
             var summary_buf: [256]u8 = undefined;
-            const summary = std.fmt.bufPrintZ(
-                &summary_buf,
-                "{} running, {} unread notifications",
-                .{ snapshot.running_count, snapshot.unread_count },
-            ) catch "Workspace activity";
+            const summary = if (workflow.needs_input_count > 0)
+                std.fmt.bufPrintZ(
+                    &summary_buf,
+                    "{} needs input, {} agents active",
+                    .{ workflow.needs_input_count, workflow.active_count },
+                ) catch "Codex workflow"
+            else
+                std.fmt.bufPrintZ(
+                    &summary_buf,
+                    "{} agents running",
+                    .{workflow.running_count},
+                ) catch "Codex workflow";
             priv.panmux_detail_summary.setLabel(summary);
         }
 
-        self.populatePanmuxSessionStrings(snapshot.workspace_id, priv.panmux_session_source);
-        self.populatePanmuxAttentionStrings(snapshot.workspace_id, priv.panmux_attention_source);
-        priv.panmux_ack_button.as(gtk.Widget).setSensitive(@intFromBool(snapshot.unread_count > 0));
+        self.populatePanmuxSessionStrings(priv.panmux_session_source);
+        self.populatePanmuxNeedsInputStrings(priv.panmux_attention_source);
+        priv.panmux_ack_button.as(gtk.Widget).setSensitive(@intFromBool(workflow.needs_input_count > 0));
     }
 
-    fn populatePanmuxSessionStrings(self: *Self, workspace_id: []const u8, source: *gtk.StringList) void {
+    fn populatePanmuxSessionStrings(self: *Self, source: *gtk.StringList) void {
         self.clearStringList(source);
 
         var count: usize = 0;
         for (self.panmuxStore().sessions()) |session| {
-            if (!std.mem.eql(u8, session.workspace_id, workspace_id)) continue;
+            if (session.agent_type != .codex) continue;
+            if (!panmux_state.isSessionActive(session.phase)) continue;
+            if (!self.panmuxWindowHasWorkspace(session.workspace_id)) continue;
             var buf: [512]u8 = undefined;
             const line = std.fmt.bufPrintZ(
                 &buf,
                 "{s} | {s} | {s}",
                 .{
-                    session.agent_label,
-                    panmux_state.phaseText(session.phase),
+                    self.panmuxWorkspaceTitle(session.workspace_id),
+                    self.panmuxCodexWorkflowState(session),
                     session.last_summary orelse session.status_text orelse "-",
                 },
             ) catch continue;
@@ -1365,22 +1370,24 @@ pub const Window = extern struct {
             count += 1;
         }
 
-        if (count == 0) source.append("No sessions.");
+        if (count == 0) source.append("No active agents.");
     }
 
-    fn populatePanmuxAttentionStrings(self: *Self, workspace_id: []const u8, source: *gtk.StringList) void {
+    fn populatePanmuxNeedsInputStrings(self: *Self, source: *gtk.StringList) void {
         self.clearStringList(source);
 
         var count: usize = 0;
-        for (self.panmuxStore().attentions()) |attention| {
-            if (!std.mem.eql(u8, attention.workspace_id, workspace_id)) continue;
+        for (self.panmuxStore().sessions()) |session| {
+            if (session.agent_type != .codex) continue;
+            if (!panmux_state.isSessionActive(session.phase)) continue;
+            if (!self.panmuxWindowHasWorkspace(session.workspace_id)) continue;
+            const attention = self.panmuxStore().latestUnreadAttentionForSession(session.session_id) orelse continue;
             var buf: [512]u8 = undefined;
             const line = std.fmt.bufPrintZ(
                 &buf,
-                "{s} | {s}: {s}",
+                "{s} | {s}",
                 .{
-                    if (attention.acked_at_ms == null) "new" else "read",
-                    panmux_state.severityText(attention.severity),
+                    self.panmuxWorkspaceTitle(session.workspace_id),
                     attention.body orelse attention.title,
                 },
             ) catch continue;
@@ -1388,7 +1395,70 @@ pub const Window = extern struct {
             count += 1;
         }
 
-        if (count == 0) source.append("No notifications.");
+        if (count == 0) source.append("Nothing needs input.");
+    }
+
+    fn panmuxWindowWorkflowSnapshot(self: *Self) PanmuxWorkflowSnapshot {
+        var snapshot: PanmuxWorkflowSnapshot = .{};
+        for (self.panmuxStore().sessions()) |session| {
+            if (session.agent_type != .codex) continue;
+            if (!panmux_state.isSessionActive(session.phase)) continue;
+            if (!self.panmuxWindowHasWorkspace(session.workspace_id)) continue;
+
+            snapshot.active_count += 1;
+            if (self.panmuxStore().sessionNeedsInput(session.session_id)) {
+                snapshot.needs_input_count += 1;
+            } else {
+                snapshot.running_count += 1;
+            }
+        }
+
+        return snapshot;
+    }
+
+    fn panmuxWindowHasWorkspace(self: *Self, workspace_id: []const u8) bool {
+        const n_pages = self.private().tab_view.getNPages();
+        var i: c_int = 0;
+        while (i < n_pages) : (i += 1) {
+            const page = self.private().tab_view.getNthPage(i);
+            var tab_buf: [32]u8 = undefined;
+            const page_workspace_id = panmuxWorkspaceIdForPage(page, &tab_buf) orelse continue;
+            if (std.mem.eql(u8, page_workspace_id, workspace_id)) return true;
+        }
+
+        return false;
+    }
+
+    fn panmuxWorkspaceTitle(self: *Self, workspace_id: []const u8) []const u8 {
+        const n_pages = self.private().tab_view.getNPages();
+        var i: c_int = 0;
+        while (i < n_pages) : (i += 1) {
+            const page = self.private().tab_view.getNthPage(i);
+            var tab_buf: [32]u8 = undefined;
+            const page_workspace_id = panmuxWorkspaceIdForPage(page, &tab_buf) orelse continue;
+            if (!std.mem.eql(u8, page_workspace_id, workspace_id)) continue;
+            return std.mem.span(page.getTitle());
+        }
+
+        return "Codex";
+    }
+
+    fn panmuxCodexWorkflowState(self: *Self, session: panmux_state.AgentSessionState) []const u8 {
+        if (self.panmuxStore().sessionNeedsInput(session.session_id)) return "Needs input";
+        if (session.phase == .starting) return "Starting";
+        return "Running";
+    }
+
+    fn consumePanmuxNeedsInputForPage(self: *Self, page: *adw.TabPage) void {
+        var tab_buf: [32]u8 = undefined;
+        const workspace_id = panmuxWorkspaceIdForPage(page, &tab_buf) orelse return;
+        const store = self.panmuxStore();
+        for (store.sessions()) |session| {
+            if (!std.mem.eql(u8, session.workspace_id, workspace_id)) continue;
+            if (session.agent_type != .codex) continue;
+            if (!panmux_state.isSessionActive(session.phase)) continue;
+            _ = store.ackSessionAttention(session.session_id);
+        }
     }
 
     fn clearStringList(self: *Self, source: *gtk.StringList) void {
@@ -2156,11 +2226,19 @@ pub const Window = extern struct {
     }
 
     fn panmuxAckAllAttention(_: *gtk.Button, self: *Self) callconv(.c) void {
-        const page = self.private().tab_view.getSelectedPage() orelse return;
-        var tab_buf: [32]u8 = undefined;
-        const workspace_id = panmuxWorkspaceIdForPage(page, &tab_buf) orelse return;
-        _ = self.panmuxStore().ackWorkspaceAttention(workspace_id);
-        self.refreshPanmuxPage(page);
+        const store = self.panmuxStore();
+        for (store.sessions()) |session| {
+            if (session.agent_type != .codex) continue;
+            if (!panmux_state.isSessionActive(session.phase)) continue;
+            if (!self.panmuxWindowHasWorkspace(session.workspace_id)) continue;
+            _ = store.ackSessionAttention(session.session_id);
+        }
+
+        const n_pages = self.private().tab_view.getNPages();
+        var i: c_int = 0;
+        while (i < n_pages) : (i += 1) {
+            self.refreshPanmuxPage(self.private().tab_view.getNthPage(i));
+        }
     }
 
     //---------------------------------------------------------------
@@ -2422,6 +2500,7 @@ pub const Window = extern struct {
         // If the tab was previously marked as needing attention
         // (e.g. due to a bell character), we now unmark that
         page.setNeedsAttention(@intFromBool(false));
+        self.consumePanmuxNeedsInputForPage(page);
         self.refreshPanmuxPage(page);
         self.focusActiveSurface();
     }

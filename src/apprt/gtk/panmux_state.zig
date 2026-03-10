@@ -184,6 +184,37 @@ pub const Store = struct {
         return self.attention_items.items;
     }
 
+    pub fn latestUnreadAttentionForSession(self: *const Store, session_id: []const u8) ?*const AttentionItem {
+        var latest: ?*const AttentionItem = null;
+        for (self.attention_items.items) |*attention| {
+            if (!attention.ack_required or attention.acked_at_ms != null) continue;
+            const attention_session_id = attention.session_id orelse continue;
+            if (!std.mem.eql(u8, attention_session_id, session_id)) continue;
+            if (latest == null or attention.created_at_ms > latest.?.created_at_ms) {
+                latest = attention;
+            }
+        }
+
+        return latest;
+    }
+
+    pub fn sessionNeedsInput(self: *const Store, session_id: []const u8) bool {
+        return self.latestUnreadAttentionForSession(session_id) != null;
+    }
+
+    pub fn ackSessionAttention(self: *Store, session_id: []const u8) u32 {
+        var count: u32 = 0;
+        for (self.attention_items.items) |*attention| {
+            if (!attention.ack_required or attention.acked_at_ms != null) continue;
+            const attention_session_id = attention.session_id orelse continue;
+            if (!std.mem.eql(u8, attention_session_id, session_id)) continue;
+            attention.acked_at_ms = nowMs();
+            count += 1;
+        }
+
+        return count;
+    }
+
     pub fn ensureWorkspace(self: *Store, workspace_id: []const u8, tab_id: []const u8) !void {
         _ = try self.ensureWorkspaceRecord(workspace_id, tab_id);
     }
@@ -282,6 +313,7 @@ pub const Store = struct {
                 }
             }
 
+            _ = self.ackSessionAttention(session.session_id);
             var removed = self.session_items.swapRemove(i);
             removed.deinit(self.alloc);
         }
@@ -296,6 +328,7 @@ pub const Store = struct {
             if (!std.mem.eql(u8, session_surface_id, surface_id)) continue;
             if (!std.mem.startsWith(u8, session.session_id, "legacy:")) continue;
 
+            _ = self.ackSessionAttention(session.session_id);
             if (session.last_summary == null and session.status_text == null) {
                 var removed = self.session_items.swapRemove(i);
                 removed.deinit(self.alloc);
@@ -362,77 +395,9 @@ pub const Store = struct {
     }
 
     pub fn snapshotWorkspace(self: *const Store, workspace_id: []const u8) ?WorkspaceSnapshot {
-        if (self.findWorkspaceIndex(workspace_id) == null) {
-            var has_related = false;
-            for (self.session_items.items) |session| {
-                if (std.mem.eql(u8, session.workspace_id, workspace_id)) {
-                    has_related = true;
-                    break;
-                }
-            }
-            if (!has_related) {
-                for (self.attention_items.items) |attention| {
-                    if (std.mem.eql(u8, attention.workspace_id, workspace_id)) {
-                        has_related = true;
-                        break;
-                    }
-                }
-            }
-            if (!has_related) return null;
-        }
-
-        var snapshot: WorkspaceSnapshot = .{
-            .workspace_id = workspace_id,
-        };
-
-        var latest_session: ?*const AgentSessionState = null;
-        var strongest_attention: ?*const AttentionItem = null;
-
-        for (self.session_items.items) |*session| {
-            if (!std.mem.eql(u8, session.workspace_id, workspace_id)) continue;
-            if (session.phase == .running) snapshot.running_count += 1;
-
-            if (latest_session == null or session.updated_at_ms > latest_session.?.updated_at_ms) {
-                latest_session = session;
-            }
-        }
-
-        for (self.attention_items.items) |*attention| {
-            if (!std.mem.eql(u8, attention.workspace_id, workspace_id)) continue;
-            if (!attention.ack_required or attention.acked_at_ms != null) continue;
-            snapshot.unread_count += 1;
-
-            if (strongest_attention == null) {
-                strongest_attention = attention;
-                continue;
-            }
-
-            const current_severity = strongest_attention.?.severity;
-            if (severityPriority(attention.severity) > severityPriority(current_severity) or
-                (severityPriority(attention.severity) == severityPriority(current_severity) and
-                    attention.created_at_ms > strongest_attention.?.created_at_ms))
-            {
-                strongest_attention = attention;
-            }
-        }
-
-        if (snapshot.running_count > 0) {
-            snapshot.badge_kind = .running;
-            if (latest_session) |session| {
-                snapshot.tooltip = session.last_summary orelse session.status_text;
-            }
-        } else if (latest_session) |session| {
-            snapshot.badge_kind = badgeKindForSession(session);
-            snapshot.badge_label = badgeLabelForSession(session);
-            snapshot.tooltip = session.last_summary orelse session.status_text;
-        }
-
-        if (strongest_attention) |attention| {
-            snapshot.overlay_kind = overlayKindForSeverity(attention.severity);
-            snapshot.tooltip = attention.body orelse attention.title;
-        }
-
-        return snapshot;
+        const stable_workspace_id = self.stableWorkspaceId(workspace_id) orelse return null;
+        if (self.snapshotActiveCodexWorkspace(stable_workspace_id)) |snapshot| return snapshot;
+        return self.snapshotLegacyWorkspace(stable_workspace_id);
     }
 
     fn ensureWorkspaceRecord(self: *Store, workspace_id: []const u8, tab_id: []const u8) !*WorkspaceState {
@@ -520,6 +485,129 @@ pub const Store = struct {
         }
 
         return null;
+    }
+
+    fn stableWorkspaceId(self: *const Store, workspace_id: []const u8) ?[]const u8 {
+        if (self.findWorkspaceIndex(workspace_id)) |idx| return self.workspace_items.items[idx].workspace_id;
+
+        for (self.session_items.items) |session| {
+            if (std.mem.eql(u8, session.workspace_id, workspace_id)) return session.workspace_id;
+        }
+
+        for (self.attention_items.items) |attention| {
+            if (std.mem.eql(u8, attention.workspace_id, workspace_id)) return attention.workspace_id;
+        }
+
+        return null;
+    }
+
+    fn snapshotActiveCodexWorkspace(self: *const Store, workspace_id: []const u8) ?WorkspaceSnapshot {
+        var snapshot: WorkspaceSnapshot = .{
+            .workspace_id = workspace_id,
+        };
+        var has_active_codex = false;
+        var latest_running_session: ?*const AgentSessionState = null;
+        var latest_needs_input_attention: ?*const AttentionItem = null;
+
+        for (self.session_items.items) |*session| {
+            if (!std.mem.eql(u8, session.workspace_id, workspace_id)) continue;
+            if (session.agent_type != .codex) continue;
+            if (!isSessionActive(session.phase)) continue;
+
+            has_active_codex = true;
+            if (self.latestUnreadAttentionForSession(session.session_id)) |attention| {
+                snapshot.unread_count += 1;
+                if (latest_needs_input_attention == null or attention.created_at_ms > latest_needs_input_attention.?.created_at_ms) {
+                    latest_needs_input_attention = attention;
+                }
+                continue;
+            }
+
+            snapshot.running_count += 1;
+            if (latest_running_session == null or session.updated_at_ms > latest_running_session.?.updated_at_ms) {
+                latest_running_session = session;
+            }
+        }
+
+        if (!has_active_codex) return null;
+
+        if (snapshot.unread_count > 0) {
+            snapshot.badge_kind = .info;
+            snapshot.overlay_kind = .info;
+            if (latest_needs_input_attention) |attention| {
+                snapshot.tooltip = attention.body orelse attention.title;
+            }
+            return snapshot;
+        }
+
+        snapshot.badge_kind = .running;
+        if (latest_running_session) |session| {
+            snapshot.tooltip = session.last_summary orelse session.status_text;
+        }
+        return snapshot;
+    }
+
+    fn snapshotLegacyWorkspace(self: *const Store, workspace_id: []const u8) ?WorkspaceSnapshot {
+        var snapshot: WorkspaceSnapshot = .{
+            .workspace_id = workspace_id,
+        };
+        var latest_session: ?*const AgentSessionState = null;
+        var strongest_attention: ?*const AttentionItem = null;
+
+        for (self.session_items.items) |*session| {
+            if (!std.mem.eql(u8, session.workspace_id, workspace_id)) continue;
+            if (session.agent_type == .codex) continue;
+            if (session.phase == .running) snapshot.running_count += 1;
+
+            if (latest_session == null or session.updated_at_ms > latest_session.?.updated_at_ms) {
+                latest_session = session;
+            }
+        }
+
+        for (self.attention_items.items) |*attention| {
+            if (!std.mem.eql(u8, attention.workspace_id, workspace_id)) continue;
+            if (!attention.ack_required or attention.acked_at_ms != null) continue;
+            if (self.attentionBelongsToCodexSession(attention)) continue;
+            snapshot.unread_count += 1;
+
+            if (strongest_attention == null) {
+                strongest_attention = attention;
+                continue;
+            }
+
+            const current_severity = strongest_attention.?.severity;
+            if (severityPriority(attention.severity) > severityPriority(current_severity) or
+                (severityPriority(attention.severity) == severityPriority(current_severity) and
+                    attention.created_at_ms > strongest_attention.?.created_at_ms))
+            {
+                strongest_attention = attention;
+            }
+        }
+
+        if (snapshot.running_count > 0) {
+            snapshot.badge_kind = .running;
+            if (latest_session) |session| {
+                snapshot.tooltip = session.last_summary orelse session.status_text;
+            }
+        } else if (latest_session) |session| {
+            snapshot.badge_kind = badgeKindForSession(session);
+            snapshot.badge_label = badgeLabelForSession(session);
+            snapshot.tooltip = session.last_summary orelse session.status_text;
+        }
+
+        if (strongest_attention) |attention| {
+            snapshot.overlay_kind = overlayKindForSeverity(attention.severity);
+            snapshot.tooltip = attention.body orelse attention.title;
+        }
+
+        if (latest_session == null and strongest_attention == null) return null;
+        return snapshot;
+    }
+
+    fn attentionBelongsToCodexSession(self: *const Store, attention: *const AttentionItem) bool {
+        const session_id = attention.session_id orelse return false;
+        const idx = self.findSessionIndex(session_id) orelse return false;
+        return self.session_items.items[idx].agent_type == .codex;
     }
 };
 
@@ -613,7 +701,7 @@ fn severityPriority(severity: Severity) u8 {
     };
 }
 
-fn isSessionActive(phase: SessionPhase) bool {
+pub fn isSessionActive(phase: SessionPhase) bool {
     return switch (phase) {
         .starting, .running, .waiting_user => true,
         .completed, .failed, .exited => false,
@@ -675,8 +763,9 @@ test "store tracks sessions and persistent attention separately" {
 
     {
         const snapshot = store.snapshotWorkspace("tab-a").?;
-        try std.testing.expectEqual(@as(u32, 1), snapshot.running_count);
+        try std.testing.expectEqual(@as(u32, 0), snapshot.running_count);
         try std.testing.expectEqual(@as(u32, 1), snapshot.unread_count);
+        try std.testing.expectEqual(BadgeKind.info, snapshot.badge_kind);
         try std.testing.expectEqual(OverlayKind.info, snapshot.overlay_kind);
     }
 }
@@ -715,8 +804,20 @@ test "ack workspace attention clears unread snapshot count" {
     var store = Store.init(std.testing.allocator);
     defer store.deinit();
 
+    try store.updateSession(.{
+        .workspace_id = "tab-a",
+        .tab_id = "tab-a",
+        .surface_id = "surface-a",
+        .session_id = "session-a",
+        .agent_type = .codex,
+        .agent_label = "Codex",
+        .phase = .running,
+        .severity = .none,
+    });
+
     _ = try store.raiseAttention(.{
         .workspace_id = "tab-a",
+        .session_id = "session-a",
         .severity = .info,
         .title = "Codex",
         .body = "turn complete",
@@ -726,4 +827,25 @@ test "ack workspace attention clears unread snapshot count" {
     try std.testing.expectEqual(@as(u32, 1), store.snapshotWorkspace("tab-a").?.unread_count);
     try std.testing.expectEqual(@as(u32, 1), store.ackWorkspaceAttention("tab-a"));
     try std.testing.expectEqual(@as(u32, 0), store.snapshotWorkspace("tab-a").?.unread_count);
+    try std.testing.expectEqual(BadgeKind.running, store.snapshotWorkspace("tab-a").?.badge_kind);
+}
+
+test "completed codex sessions do not keep a visible workspace badge" {
+    var store = Store.init(std.testing.allocator);
+    defer store.deinit();
+
+    try store.updateSession(.{
+        .workspace_id = "tab-a",
+        .tab_id = "tab-a",
+        .surface_id = "surface-a",
+        .session_id = "session-a",
+        .agent_type = .codex,
+        .agent_label = "Codex",
+        .phase = .completed,
+        .severity = .info,
+        .status_text = "info",
+        .summary = "turn complete",
+    });
+
+    try std.testing.expectEqual(@as(?WorkspaceSnapshot, null), store.snapshotWorkspace("tab-a"));
 }

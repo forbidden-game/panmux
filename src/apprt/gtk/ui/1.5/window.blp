@@ -307,11 +307,11 @@ template $GhosttyWindow: Adw.ApplicationWindow {
                               ]
 
                               Gtk.Image {
-                                icon-name: "emblem-ok-symbolic";
+                                icon-name: "mail-unread-symbolic";
                               }
 
                               Gtk.Label {
-                                label: _("Ready");
+                                label: _("Needs input");
                                 wrap: false;
 
                                 styles [
@@ -530,7 +530,7 @@ template $GhosttyWindow: Adw.ApplicationWindow {
                   "panmux-detail-title",
                 ]
 
-                label: _("Workspace Activity");
+                label: _("Agent Workflow");
               }
 
               Gtk.Label panmux_detail_summary {
@@ -545,18 +545,18 @@ template $GhosttyWindow: Adw.ApplicationWindow {
                   "panmux-detail-summary",
                 ]
 
-                label: _("Select a workspace to inspect agent progress.");
+                label: _("Track active Codex agents in this window.");
               }
 
               Gtk.Button panmux_ack_button {
                 clicked => $panmux_ack_all_attention();
                 halign: start;
-                label: _("Mark Notifications Read");
+                label: _("Mark Needs Input Read");
               }
 
               Gtk.Label {
                 halign: start;
-                label: _("Sessions");
+                label: _("Agents");
                 xalign: 0.0;
 
                 styles [
@@ -608,7 +608,7 @@ template $GhosttyWindow: Adw.ApplicationWindow {
 
               Gtk.Label {
                 halign: start;
-                label: _("Notifications");
+                label: _("Needs Input");
                 xalign: 0.0;
 
                 styles [
