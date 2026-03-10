@@ -213,12 +213,30 @@ label.resize-overlay {
   border-radius: 12px;
 }
 
-.panmux-sidebar-attention {
-  background-color: rgba(46, 160, 67, 0.18);
+.panmux-sidebar-state {
   border-radius: 12px;
-  outline-color: rgba(46, 160, 67, 0.48);
+}
+
+.panmux-sidebar-state-info {
+  background-color: rgba(46, 160, 67, 0.14);
+}
+
+.panmux-sidebar-state-warning {
+  background-color: rgba(210, 153, 34, 0.15);
+}
+
+.panmux-sidebar-state-error {
+  background-color: rgba(201, 72, 72, 0.15);
+}
+
+.panmux-sidebar-attention {
+  background-color: rgba(255, 255, 255, 0.92);
+  border-radius: 999px;
+  min-height: 8px;
+  min-width: 8px;
+  outline-color: rgba(255, 255, 255, 0.55);
   outline-style: solid;
-  outline-width: 1px;
+  outline-width: 2px;
 }
 
 .panmux-sidebar-title {
@@ -233,10 +251,45 @@ label.resize-overlay {
   min-width: 0;
 }
 
-.panmux-sidebar-status {
-  min-height: 16px;
-  min-width: 16px;
-  opacity: 0.82;
+.panmux-sidebar-badge {
+  border-radius: 999px;
+  min-height: 0;
+  padding: 3px 8px;
+}
+
+.panmux-sidebar-badge image,
+.panmux-sidebar-badge spinner,
+.panmux-sidebar-badge label {
+  opacity: 0.96;
+}
+
+.panmux-sidebar-badge-label {
+  font-weight: 600;
+}
+
+.panmux-sidebar-badge-running {
+  background-color: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.84);
+}
+
+.panmux-sidebar-badge-info {
+  background-color: rgba(46, 160, 67, 0.18);
+  color: rgb(121, 224, 146);
+}
+
+.panmux-sidebar-badge-warning {
+  background-color: rgba(210, 153, 34, 0.18);
+  color: rgb(243, 201, 96);
+}
+
+.panmux-sidebar-badge-error {
+  background-color: rgba(201, 72, 72, 0.18);
+  color: rgb(255, 152, 152);
+}
+
+.panmux-sidebar-badge-other {
+  background-color: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.78);
 }
 
 .panmux-sidebar-shortcut {

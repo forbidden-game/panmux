@@ -33,7 +33,6 @@ const panmux_ipc = @import("../../../panmux_ipc.zig");
 const WeakRef = @import("../weak_ref.zig").WeakRef;
 
 const log = std.log.scoped(.gtk_ghostty_window);
-const panmux_codex_done_state = "_panmux_codex_done";
 
 pub const Window = extern struct {
     const Self = @This();
@@ -923,12 +922,6 @@ pub const Window = extern struct {
 
     fn normalizedPanmuxState(state: ?[]const u8) []const u8 {
         const value = state orelse return "";
-        if (std.mem.eql(u8, value, panmux_codex_done_state)) {
-            return "info";
-        }
-        if (std.mem.eql(u8, value, "done")) {
-            return "info";
-        }
         return value;
     }
 
@@ -1068,10 +1061,10 @@ pub const Window = extern struct {
 
     fn panmuxIndicatorIconName(state: []const u8) ?[*:0]const u8 {
         if (state.len == 0) return null;
+        if (std.mem.eql(u8, state, "info")) return "emblem-ok-symbolic";
         if (std.mem.eql(u8, state, "error")) return "dialog-error-symbolic";
         if (std.mem.eql(u8, state, "warn")) return "dialog-warning-symbolic";
         if (std.mem.eql(u8, state, "warning")) return "dialog-warning-symbolic";
-        if (std.mem.eql(u8, state, "info")) return "dialog-information-symbolic";
         return "emblem-system-symbolic";
     }
 
@@ -1113,6 +1106,10 @@ pub const Window = extern struct {
         if (std.mem.eql(u8, state, "warn") or std.mem.eql(u8, state, "warning")) return "warning";
         if (std.mem.eql(u8, state, "error")) return "error";
         return "other";
+    }
+
+    fn sidebarStatusIs(loading: bool, keyword: ?[]const u8, expected: []const u8) bool {
+        return std.mem.eql(u8, sidebarStatusKind(loading, keyword), expected);
     }
 
     fn panmuxStatusTooltip(params: panmux_ipc.Params, buf: []u8) [*:0]const u8 {
@@ -1690,12 +1687,44 @@ pub const Window = extern struct {
         return @intFromBool(pos < 9);
     }
 
-    fn closureSidebarStatusKind(
+    fn closureSidebarStatusIsRunning(
         _: *Self,
         loading: c_int,
         keyword_: ?[*:0]const u8,
-    ) callconv(.c) [*:0]const u8 {
-        return glib.ext.dupeZ(u8, sidebarStatusKind(loading != 0, keywordOrNull(keyword_)));
+    ) callconv(.c) c_int {
+        return @intFromBool(sidebarStatusIs(loading != 0, keywordOrNull(keyword_), "running"));
+    }
+
+    fn closureSidebarStatusIsInfo(
+        _: *Self,
+        loading: c_int,
+        keyword_: ?[*:0]const u8,
+    ) callconv(.c) c_int {
+        return @intFromBool(sidebarStatusIs(loading != 0, keywordOrNull(keyword_), "info"));
+    }
+
+    fn closureSidebarStatusIsWarning(
+        _: *Self,
+        loading: c_int,
+        keyword_: ?[*:0]const u8,
+    ) callconv(.c) c_int {
+        return @intFromBool(sidebarStatusIs(loading != 0, keywordOrNull(keyword_), "warning"));
+    }
+
+    fn closureSidebarStatusIsError(
+        _: *Self,
+        loading: c_int,
+        keyword_: ?[*:0]const u8,
+    ) callconv(.c) c_int {
+        return @intFromBool(sidebarStatusIs(loading != 0, keywordOrNull(keyword_), "error"));
+    }
+
+    fn closureSidebarStatusIsOther(
+        _: *Self,
+        loading: c_int,
+        keyword_: ?[*:0]const u8,
+    ) callconv(.c) c_int {
+        return @intFromBool(sidebarStatusIs(loading != 0, keywordOrNull(keyword_), "other"));
     }
 
     //---------------------------------------------------------------
@@ -2633,7 +2662,11 @@ pub const Window = extern struct {
             class.bindTemplateCallback("sidebar_cwd", &closureSidebarCwd);
             class.bindTemplateCallback("sidebar_hint", &closureSidebarHint);
             class.bindTemplateCallback("sidebar_hint_visible", &closureSidebarHintVisible);
-            class.bindTemplateCallback("sidebar_status_kind", &closureSidebarStatusKind);
+            class.bindTemplateCallback("sidebar_status_is_running", &closureSidebarStatusIsRunning);
+            class.bindTemplateCallback("sidebar_status_is_info", &closureSidebarStatusIsInfo);
+            class.bindTemplateCallback("sidebar_status_is_warning", &closureSidebarStatusIsWarning);
+            class.bindTemplateCallback("sidebar_status_is_error", &closureSidebarStatusIsError);
+            class.bindTemplateCallback("sidebar_status_is_other", &closureSidebarStatusIsOther);
             class.bindTemplateCallback("titlebar_style_is_tabs", &closureTitlebarStyleIsTab);
             class.bindTemplateCallback("computed_subtitle", &closureSubtitle);
 
@@ -2652,11 +2685,7 @@ test "panmux info states stay plain info" {
     const turn_complete = Window.storedPanmuxState("info");
     try std.testing.expectEqualStrings("info", turn_complete);
 
-    const exited = Window.storedPanmuxState(Window.normalizedPanmuxState("done"));
-    try std.testing.expectEqualStrings("info", exited);
-    try std.testing.expectEqualStrings("info", Window.publicPanmuxState(exited).?);
-
-    try std.testing.expectEqualStrings("info", Window.publicPanmuxState(panmux_codex_done_state).?);
+    try std.testing.expectEqualStrings("info", Window.publicPanmuxState(turn_complete).?);
 }
 
 test "panmux running is derived separately from stored status" {
@@ -2667,6 +2696,12 @@ test "panmux running is derived separately from stored status" {
     try std.testing.expectEqualStrings("error", Window.sidebarStatusKind(false, "error"));
     try std.testing.expectEqualStrings("other", Window.sidebarStatusKind(false, "custom"));
     try std.testing.expectEqualStrings("empty", Window.sidebarStatusKind(false, null));
+}
+
+test "sidebar status helpers agree on visibility" {
+    try std.testing.expect(Window.sidebarStatusIs(false, "info", "info"));
+    try std.testing.expect(Window.sidebarStatusIs(false, "warning", "warning"));
+    try std.testing.expect(!Window.sidebarStatusIs(false, "warning", "info"));
 }
 
 test "panmux desktop notification maps pong to plain info" {
