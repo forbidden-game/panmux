@@ -664,7 +664,7 @@ test "store tracks sessions and persistent attention separately" {
         try std.testing.expectEqual(OverlayKind.none, snapshot.overlay_kind);
     }
 
-    try store.raiseAttention(.{
+    _ = try store.raiseAttention(.{
         .workspace_id = "tab-a",
         .session_id = "session-a",
         .severity = .info,
@@ -715,7 +715,7 @@ test "ack workspace attention clears unread snapshot count" {
     var store = Store.init(std.testing.allocator);
     defer store.deinit();
 
-    try store.raiseAttention(.{
+    _ = try store.raiseAttention(.{
         .workspace_id = "tab-a",
         .severity = .info,
         .title = "Codex",
