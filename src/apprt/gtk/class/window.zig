@@ -1031,7 +1031,6 @@ pub const Window = extern struct {
         page.setKeyword("");
         page.setIndicatorIcon(null);
         page.setIndicatorTooltip("");
-        page.setNeedsAttention(@intFromBool(false));
     }
 
     fn finishPanmuxRunning(page: *adw.TabPage) void {
