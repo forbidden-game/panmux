@@ -277,7 +277,7 @@ template $GhosttyWindow: Adw.ApplicationWindow {
                                   "panmux-sidebar-badge-running",
                                 ]
 
-                                visible: bind $sidebar_status_is_running(template.item as <Adw.TabPage>.loading, template.item as <Adw.TabPage>.keyword) as <bool>;
+                                visible: bind $sidebar_status_is_running(template.item as <Adw.TabPage>) as <bool>;
 
                                 Gtk.Spinner {
                                   height-request: 14;
@@ -302,7 +302,7 @@ template $GhosttyWindow: Adw.ApplicationWindow {
                                 spacing: 4;
                                 tooltip-text: bind template.item as <Adw.TabPage>.indicator-tooltip;
                                 valign: center;
-                                visible: bind $sidebar_status_is_info(template.item as <Adw.TabPage>.loading, template.item as <Adw.TabPage>.keyword) as <bool>;
+                                visible: bind $sidebar_status_is_unseen(template.item as <Adw.TabPage>) as <bool>;
 
                                 styles [
                                   "panmux-sidebar-badge",
@@ -314,7 +314,7 @@ template $GhosttyWindow: Adw.ApplicationWindow {
                                 }
 
                                 Gtk.Label {
-                                  label: _("Needs input");
+                                  label: _("Unseen reply");
                                   wrap: false;
 
                                   styles [
@@ -330,7 +330,35 @@ template $GhosttyWindow: Adw.ApplicationWindow {
                                 spacing: 4;
                                 tooltip-text: bind template.item as <Adw.TabPage>.indicator-tooltip;
                                 valign: center;
-                                visible: bind $sidebar_status_is_warning(template.item as <Adw.TabPage>.loading, template.item as <Adw.TabPage>.keyword) as <bool>;
+                                visible: bind $sidebar_status_is_seen(template.item as <Adw.TabPage>) as <bool>;
+
+                                styles [
+                                  "panmux-sidebar-badge",
+                                  "panmux-sidebar-badge-info",
+                                ]
+
+                                Gtk.Image {
+                                  icon-name: "mail-read-symbolic";
+                                }
+
+                                Gtk.Label {
+                                  label: _("Seen reply");
+                                  wrap: false;
+
+                                  styles [
+                                    "caption",
+                                    "panmux-sidebar-badge-label",
+                                  ]
+                                }
+                              }
+
+                              Gtk.Box {
+                                halign: end;
+                                orientation: horizontal;
+                                spacing: 4;
+                                tooltip-text: bind template.item as <Adw.TabPage>.indicator-tooltip;
+                                valign: center;
+                                visible: bind $sidebar_status_is_warning(template.item as <Adw.TabPage>) as <bool>;
 
                                 styles [
                                   "panmux-sidebar-badge",
@@ -358,7 +386,7 @@ template $GhosttyWindow: Adw.ApplicationWindow {
                                 spacing: 4;
                                 tooltip-text: bind template.item as <Adw.TabPage>.indicator-tooltip;
                                 valign: center;
-                                visible: bind $sidebar_status_is_error(template.item as <Adw.TabPage>.loading, template.item as <Adw.TabPage>.keyword) as <bool>;
+                                visible: bind $sidebar_status_is_error(template.item as <Adw.TabPage>) as <bool>;
 
                                 styles [
                                   "panmux-sidebar-badge",
@@ -386,7 +414,7 @@ template $GhosttyWindow: Adw.ApplicationWindow {
                                 spacing: 4;
                                 tooltip-text: bind template.item as <Adw.TabPage>.indicator-tooltip;
                                 valign: center;
-                                visible: bind $sidebar_status_is_other(template.item as <Adw.TabPage>.loading, template.item as <Adw.TabPage>.keyword) as <bool>;
+                                visible: bind $sidebar_status_is_other(template.item as <Adw.TabPage>) as <bool>;
 
                                 styles [
                                   "panmux-sidebar-badge",
@@ -432,7 +460,7 @@ template $GhosttyWindow: Adw.ApplicationWindow {
                             hexpand: true;
                             valign: fill;
                             vexpand: true;
-                            visible: bind $sidebar_overlay_is_info(template.item as <Adw.TabPage>.loading, template.item as <Adw.TabPage>.keyword, template.item as <Adw.TabPage>) as <bool>;
+                            visible: bind $sidebar_overlay_is_info(template.item as <Adw.TabPage>) as <bool>;
 
                             styles [
                               "panmux-sidebar-state",
@@ -447,7 +475,7 @@ template $GhosttyWindow: Adw.ApplicationWindow {
                             hexpand: true;
                             valign: fill;
                             vexpand: true;
-                            visible: bind $sidebar_overlay_is_warning(template.item as <Adw.TabPage>.loading, template.item as <Adw.TabPage>.keyword, template.item as <Adw.TabPage>) as <bool>;
+                            visible: bind $sidebar_overlay_is_warning(template.item as <Adw.TabPage>) as <bool>;
 
                             styles [
                               "panmux-sidebar-state",
@@ -462,7 +490,7 @@ template $GhosttyWindow: Adw.ApplicationWindow {
                             hexpand: true;
                             valign: fill;
                             vexpand: true;
-                            visible: bind $sidebar_overlay_is_error(template.item as <Adw.TabPage>.loading, template.item as <Adw.TabPage>.keyword, template.item as <Adw.TabPage>) as <bool>;
+                            visible: bind $sidebar_overlay_is_error(template.item as <Adw.TabPage>) as <bool>;
 
                             styles [
                               "panmux-sidebar-state",
