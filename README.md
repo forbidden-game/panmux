@@ -110,7 +110,7 @@ panmux
 # In any tab, control the current session
 panmuxctl notify --title "Build" --body "Complete" --state done
 panmuxctl set-status --state running --title "Testing"
-panmuxctl clear-status
+panmuxctl clear-status --session-id "$PANMUX_SESSION_ID"
 
 # Switch tabs
 panmuxctl focus-tab --tab 2
