@@ -619,12 +619,15 @@ pub const Store = struct {
 
         const old_session_id = session.session_id;
         for (self.attention_items.items) |*attention| {
+            const belongs_to_old_session = attention.session_id != null and
+                std.mem.eql(u8, attention.session_id.?, old_session_id);
             if (attention.session_id) |attention_session_id| {
                 if (std.mem.eql(u8, attention_session_id, old_session_id)) {
                     try replaceOptionalOwned(self.alloc, &attention.session_id, session_id);
                 }
             }
 
+            if (!belongs_to_old_session) continue;
             if (attention.logical_key) |logical_key| {
                 const logical_suffix = logicalKeySessionSuffix(logical_key, old_session_id) orelse continue;
                 const rebound_key = try std.fmt.allocPrint(self.alloc, "{s}{s}", .{ session_id, logical_suffix });
@@ -672,6 +675,7 @@ pub const Store = struct {
 
     fn findBoundSessionIndex(self: *const Store, workspace_id: []const u8, surface_id: []const u8) ?usize {
         var best_idx: ?usize = null;
+        var best_priority: u8 = std.math.maxInt(u8);
         var best_updated_at: i64 = std.math.minInt(i64);
 
         for (self.session_items.items, 0..) |session, idx| {
@@ -680,8 +684,13 @@ pub const Store = struct {
             if (!std.mem.eql(u8, existing_surface_id, surface_id)) continue;
             if (session.agent_type != .codex) continue;
             if (!isReplyRelevant(&session)) continue;
-            if (best_idx == null or session.updated_at_ms > best_updated_at) {
+
+            const priority = boundSessionPriority(&session);
+            if (best_idx == null or priority < best_priority or
+                (priority == best_priority and session.updated_at_ms > best_updated_at))
+            {
                 best_idx = idx;
+                best_priority = priority;
                 best_updated_at = session.updated_at_ms;
             }
         }
@@ -1003,6 +1012,14 @@ fn isLegacySessionId(session_id: []const u8) bool {
     return std.mem.startsWith(u8, session_id, "legacy:");
 }
 
+fn boundSessionPriority(session: *const AgentSessionState) u8 {
+    return switch (session.reply_attention) {
+        .unseen => 0,
+        .seen => 1,
+        .none => 2,
+    };
+}
+
 fn logicalKeySessionSuffix(logical_key: []const u8, session_id: []const u8) ?[]const u8 {
     if (!std.mem.startsWith(u8, logical_key, session_id)) return null;
     if (logical_key.len == session_id.len) return "";
@@ -1112,6 +1129,79 @@ test "explicit session start adopts active legacy session on same surface" {
 
     try std.testing.expectEqual(@as(usize, 1), store.sessions().len);
     try std.testing.expectEqualStrings("session-a", store.sessions()[0].session_id);
+}
+
+test "legacy adoption migrates attention binding and logical key" {
+    var store = Store.init(std.testing.allocator);
+    defer store.deinit();
+
+    _ = try store.recordReplyCompletion(.{
+        .workspace_id = "tab-a",
+        .tab_id = "tab-a",
+        .surface_id = "surface-a",
+        .session_id = "legacy:surface-a",
+        .agent_type = .codex,
+        .agent_label = "Codex",
+        .phase = .waiting_user,
+        .severity = .info,
+        .reply_attention = .unseen,
+        .draft_started = false,
+        .turn_id = "turn-a",
+        .summary = "legacy reply",
+    }, .{
+        .workspace_id = "tab-a",
+        .session_id = "legacy:surface-a",
+        .kind = .turn_complete,
+        .severity = .info,
+        .title = "Codex",
+        .body = "legacy reply",
+        .ack_required = true,
+        .logical_key = "legacy:surface-a:turn-a",
+    });
+
+    try store.updateSession(.{
+        .workspace_id = "tab-a",
+        .tab_id = "tab-a",
+        .surface_id = "surface-a",
+        .session_id = "session-a",
+        .agent_type = .codex,
+        .agent_label = "Codex",
+        .phase = .running,
+        .severity = .none,
+    });
+
+    try std.testing.expectEqual(@as(usize, 1), store.sessions().len);
+    try std.testing.expectEqualStrings("session-a", store.sessions()[0].session_id);
+    try std.testing.expectEqualStrings("session-a", store.attentions()[0].session_id.?);
+    try std.testing.expectEqualStrings("session-a:turn-a", store.attentions()[0].logical_key.?);
+
+    const attention_id = try store.recordReplyCompletion(.{
+        .workspace_id = "tab-a",
+        .tab_id = "tab-a",
+        .surface_id = "surface-a",
+        .session_id = "session-a",
+        .agent_type = .codex,
+        .agent_label = "Codex",
+        .phase = .waiting_user,
+        .severity = .info,
+        .reply_attention = .unseen,
+        .draft_started = false,
+        .turn_id = "turn-a",
+        .summary = "refreshed reply",
+    }, .{
+        .workspace_id = "tab-a",
+        .session_id = "session-a",
+        .kind = .turn_complete,
+        .severity = .info,
+        .title = "Codex",
+        .body = "refreshed reply",
+        .ack_required = true,
+        .logical_key = "session-a:turn-a",
+    });
+
+    try std.testing.expectEqual(@as(usize, 1), store.attentions().len);
+    try std.testing.expectEqualStrings(attention_id, store.attentions()[0].attention_id);
+    try std.testing.expectEqualStrings("refreshed reply", store.attentions()[0].body.?);
 }
 
 test "explicit session start only adopts legacy placeholder on same surface" {
@@ -1363,6 +1453,70 @@ test "selected surface binding only views the focused split" {
     try std.testing.expect(store.markSessionViewed("tab-a", null, null));
     try std.testing.expectEqual(ReplyAttention.seen, store.session_items.items[0].reply_attention);
     try std.testing.expectEqual(ReplyAttention.seen, store.session_items.items[1].reply_attention);
+}
+
+test "surface-bound reply actions prefer waiting reply over newer running session" {
+    var store = Store.init(std.testing.allocator);
+    defer store.deinit();
+
+    _ = try store.recordReplyCompletion(.{
+        .workspace_id = "tab-a",
+        .tab_id = "tab-a",
+        .surface_id = "surface-a",
+        .session_id = "session-waiting",
+        .agent_type = .codex,
+        .agent_label = "Codex",
+        .phase = .waiting_user,
+        .severity = .info,
+        .reply_attention = .unseen,
+        .draft_started = false,
+        .turn_id = "turn-a",
+        .summary = "waiting reply",
+    }, .{
+        .workspace_id = "tab-a",
+        .session_id = "session-waiting",
+        .kind = .turn_complete,
+        .severity = .info,
+        .title = "Codex",
+        .body = "waiting reply",
+        .ack_required = true,
+        .logical_key = "session-waiting:turn-a",
+    });
+
+    try store.updateSession(.{
+        .workspace_id = "tab-a",
+        .tab_id = "tab-a",
+        .surface_id = "surface-a",
+        .session_id = "session-running",
+        .agent_type = .codex,
+        .agent_label = "Codex",
+        .phase = .running,
+        .severity = .none,
+    });
+
+    for (store.session_items.items) |*session| {
+        if (std.mem.eql(u8, session.session_id, "session-waiting")) {
+            session.updated_at_ms = 100;
+        } else if (std.mem.eql(u8, session.session_id, "session-running")) {
+            session.updated_at_ms = 200;
+        }
+    }
+
+    try std.testing.expect(store.markSessionViewed("tab-a", null, "surface-a"));
+    try std.testing.expect(store.markReplyDraftStarted("tab-a", null, "surface-a"));
+    try std.testing.expect(store.submitReply("tab-a", null, "surface-a"));
+
+    for (store.session_items.items) |session| {
+        if (std.mem.eql(u8, session.session_id, "session-waiting")) {
+            try std.testing.expectEqual(SessionPhase.running, session.phase);
+            try std.testing.expectEqual(ReplyAttention.none, session.reply_attention);
+            try std.testing.expect(!session.draft_started);
+        }
+        if (std.mem.eql(u8, session.session_id, "session-running")) {
+            try std.testing.expectEqual(SessionPhase.running, session.phase);
+            try std.testing.expectEqual(ReplyAttention.none, session.reply_attention);
+        }
+    }
 }
 
 test "submit reply ignores enter from the wrong split" {
