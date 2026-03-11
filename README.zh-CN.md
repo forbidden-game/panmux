@@ -96,6 +96,10 @@ cd ghostty-panmux
 - `~/.local/bin/panmuxctl` — 控制 CLI
 - `~/.local/share/applications/panmux.desktop` — 桌面启动器
 
+安装脚本还会把你当前 Ghostty 配置里与字体相关的设置快照到
+`~/.local/opt/panmux/current/etc/xdg/ghostty/config.ghostty`，让 panmux
+使用一份独立的已知稳定字体配置，而不是直接继承全局 Ghostty 配置。
+
 ### 基本使用
 
 ```bash
