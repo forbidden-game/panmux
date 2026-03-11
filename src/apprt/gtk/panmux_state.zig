@@ -585,10 +585,10 @@ pub const Store = struct {
         if (update.surface_id) |surface_id| {
             if (self.findActiveSurfaceSessionIndex(update.workspace_id, surface_id, update.agent_type)) |idx| {
                 const session = &self.session_items.items[idx];
-                if (!std.mem.eql(u8, session.session_id, update.session_id)) {
-                    try replaceOwned(self.alloc, &session.session_id, update.session_id);
+                if (isLegacySessionId(session.session_id)) {
+                    try self.rebindSessionIdentity(idx, update.session_id);
+                    return idx;
                 }
-                return idx;
             }
         }
 
@@ -611,6 +611,29 @@ pub const Store = struct {
             .updated_at_ms = nowMs(),
         });
         return self.session_items.items.len - 1;
+    }
+
+    fn rebindSessionIdentity(self: *Store, idx: usize, session_id: []const u8) !void {
+        const session = &self.session_items.items[idx];
+        if (std.mem.eql(u8, session.session_id, session_id)) return;
+
+        const old_session_id = session.session_id;
+        for (self.attention_items.items) |*attention| {
+            if (attention.session_id) |attention_session_id| {
+                if (std.mem.eql(u8, attention_session_id, old_session_id)) {
+                    try replaceOptionalOwned(self.alloc, &attention.session_id, session_id);
+                }
+            }
+
+            if (attention.logical_key) |logical_key| {
+                const logical_suffix = logicalKeySessionSuffix(logical_key, old_session_id) orelse continue;
+                const rebound_key = try std.fmt.allocPrint(self.alloc, "{s}{s}", .{ session_id, logical_suffix });
+                attention.logical_key = rebound_key;
+                self.alloc.free(logical_key);
+            }
+        }
+
+        try replaceOwned(self.alloc, &session.session_id, session_id);
     }
 
     fn findWorkspaceIndex(self: *const Store, workspace_id: []const u8) ?usize {
@@ -976,6 +999,17 @@ fn replaceOptionalOwned(alloc: std.mem.Allocator, field: *?[]u8, value: ?[]const
     if (value) |next| field.* = try alloc.dupe(u8, next);
 }
 
+fn isLegacySessionId(session_id: []const u8) bool {
+    return std.mem.startsWith(u8, session_id, "legacy:");
+}
+
+fn logicalKeySessionSuffix(logical_key: []const u8, session_id: []const u8) ?[]const u8 {
+    if (!std.mem.startsWith(u8, logical_key, session_id)) return null;
+    if (logical_key.len == session_id.len) return "";
+    if (logical_key[session_id.len] != ':') return null;
+    return logical_key[session_id.len..];
+}
+
 test "store tracks sessions and persistent attention separately" {
     var store = Store.init(std.testing.allocator);
     defer store.deinit();
@@ -1078,6 +1112,72 @@ test "explicit session start adopts active legacy session on same surface" {
 
     try std.testing.expectEqual(@as(usize, 1), store.sessions().len);
     try std.testing.expectEqualStrings("session-a", store.sessions()[0].session_id);
+}
+
+test "explicit session start only adopts legacy placeholder on same surface" {
+    var store = Store.init(std.testing.allocator);
+    defer store.deinit();
+
+    _ = try store.recordReplyCompletion(.{
+        .workspace_id = "tab-a",
+        .tab_id = "tab-a",
+        .surface_id = "surface-a",
+        .session_id = "session-a",
+        .agent_type = .codex,
+        .agent_label = "Codex",
+        .phase = .failed,
+        .severity = .@"error",
+        .reply_attention = .unseen,
+        .draft_started = false,
+        .turn_id = "turn-a",
+        .summary = "request failed",
+    }, .{
+        .workspace_id = "tab-a",
+        .session_id = "session-a",
+        .kind = .session_failed,
+        .severity = .@"error",
+        .title = "Codex",
+        .body = "request failed",
+        .ack_required = true,
+        .logical_key = "session-a:turn-a",
+    });
+
+    try store.updateSession(.{
+        .workspace_id = "tab-a",
+        .tab_id = "tab-a",
+        .surface_id = "surface-a",
+        .session_id = "session-b",
+        .agent_type = .codex,
+        .agent_label = "Codex",
+        .phase = .running,
+        .severity = .none,
+    });
+
+    try std.testing.expectEqual(@as(usize, 2), store.sessions().len);
+
+    var has_session_a = false;
+    var has_session_b = false;
+    for (store.sessions()) |session| {
+        if (std.mem.eql(u8, session.session_id, "session-a")) {
+            has_session_a = true;
+            try std.testing.expectEqual(SessionPhase.failed, session.phase);
+            try std.testing.expectEqual(ReplyAttention.unseen, session.reply_attention);
+        }
+        if (std.mem.eql(u8, session.session_id, "session-b")) {
+            has_session_b = true;
+            try std.testing.expectEqual(SessionPhase.running, session.phase);
+            try std.testing.expectEqual(ReplyAttention.none, session.reply_attention);
+        }
+    }
+
+    try std.testing.expect(has_session_a);
+    try std.testing.expect(has_session_b);
+
+    const snapshot = store.snapshotWorkspace("tab-a").?;
+    try std.testing.expectEqual(BadgeKind.unseen, snapshot.badge_kind);
+    try std.testing.expectEqual(@as(u32, 1), snapshot.unseen_count);
+    try std.testing.expectEqual(@as(u32, 1), snapshot.running_count);
+    try std.testing.expectEqualStrings("session-a", store.attentions()[0].session_id.?);
 }
 
 test "clear status with session id ignores mismatched surface id" {
@@ -1200,6 +1300,111 @@ test "failed codex replies remain visible through seen state" {
         try std.testing.expectEqual(BadgeKind.seen, snapshot.badge_kind);
         try std.testing.expectEqual(@as(u32, 1), snapshot.seen_count);
     }
+}
+
+test "selected surface binding only views the focused split" {
+    var store = Store.init(std.testing.allocator);
+    defer store.deinit();
+
+    _ = try store.recordReplyCompletion(.{
+        .workspace_id = "tab-a",
+        .tab_id = "tab-a",
+        .surface_id = "surface-a",
+        .session_id = "session-a",
+        .agent_type = .codex,
+        .agent_label = "Codex",
+        .phase = .waiting_user,
+        .severity = .info,
+        .reply_attention = .unseen,
+        .draft_started = false,
+        .turn_id = "turn-a",
+        .summary = "reply on a",
+    }, .{
+        .workspace_id = "tab-a",
+        .session_id = "session-a",
+        .kind = .turn_complete,
+        .severity = .info,
+        .title = "Codex",
+        .body = "reply on a",
+        .ack_required = true,
+        .logical_key = "session-a:turn-a",
+    });
+
+    _ = try store.recordReplyCompletion(.{
+        .workspace_id = "tab-a",
+        .tab_id = "tab-a",
+        .surface_id = "surface-b",
+        .session_id = "session-b",
+        .agent_type = .codex,
+        .agent_label = "Codex",
+        .phase = .waiting_user,
+        .severity = .info,
+        .reply_attention = .unseen,
+        .draft_started = false,
+        .turn_id = "turn-b",
+        .summary = "reply on b",
+    }, .{
+        .workspace_id = "tab-a",
+        .session_id = "session-b",
+        .kind = .turn_complete,
+        .severity = .info,
+        .title = "Codex",
+        .body = "reply on b",
+        .ack_required = true,
+        .logical_key = "session-b:turn-b",
+    });
+
+    try store.setSelectedSurface("tab-a", "tab-a", "surface-a");
+    try std.testing.expect(store.markSessionViewed("tab-a", null, null));
+    try std.testing.expectEqual(ReplyAttention.seen, store.session_items.items[0].reply_attention);
+    try std.testing.expectEqual(ReplyAttention.unseen, store.session_items.items[1].reply_attention);
+
+    try store.setSelectedSurface("tab-a", "tab-a", "surface-b");
+    try std.testing.expect(store.markSessionViewed("tab-a", null, null));
+    try std.testing.expectEqual(ReplyAttention.seen, store.session_items.items[0].reply_attention);
+    try std.testing.expectEqual(ReplyAttention.seen, store.session_items.items[1].reply_attention);
+}
+
+test "submit reply ignores enter from the wrong split" {
+    var store = Store.init(std.testing.allocator);
+    defer store.deinit();
+
+    _ = try store.recordReplyCompletion(.{
+        .workspace_id = "tab-a",
+        .tab_id = "tab-a",
+        .surface_id = "surface-a",
+        .session_id = "session-a",
+        .agent_type = .codex,
+        .agent_label = "Codex",
+        .phase = .waiting_user,
+        .severity = .info,
+        .reply_attention = .unseen,
+        .draft_started = false,
+        .turn_id = "turn-a",
+        .summary = "reply waiting",
+    }, .{
+        .workspace_id = "tab-a",
+        .session_id = "session-a",
+        .kind = .turn_complete,
+        .severity = .info,
+        .title = "Codex",
+        .body = "reply waiting",
+        .ack_required = true,
+        .logical_key = "session-a:turn-a",
+    });
+
+    try std.testing.expect(store.markSessionViewed("tab-a", "session-a", null));
+    try std.testing.expect(store.markReplyDraftStarted("tab-a", null, "surface-a"));
+    try std.testing.expect(!store.submitReply("tab-a", null, "surface-b"));
+
+    try std.testing.expectEqual(SessionPhase.waiting_user, store.session_items.items[0].phase);
+    try std.testing.expectEqual(ReplyAttention.seen, store.session_items.items[0].reply_attention);
+    try std.testing.expect(store.session_items.items[0].draft_started);
+
+    try std.testing.expect(store.submitReply("tab-a", null, "surface-a"));
+    try std.testing.expectEqual(SessionPhase.running, store.session_items.items[0].phase);
+    try std.testing.expectEqual(ReplyAttention.none, store.session_items.items[0].reply_attention);
+    try std.testing.expect(!store.session_items.items[0].draft_started);
 }
 
 test "logical reply refresh updates one attention item per session and turn" {

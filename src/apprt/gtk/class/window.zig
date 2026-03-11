@@ -1367,6 +1367,19 @@ pub const Window = extern struct {
         expanded,
     };
 
+    const PanmuxWorkspaceReplySelection = struct {
+        session: *const panmux_state.AgentSessionState,
+        attention: ?*const panmux_state.AttentionItem = null,
+    };
+
+    const PanmuxWindowQueueEntry = struct {
+        workspace_id: []const u8,
+        tab_position: c_int,
+        reply_attention: panmux_state.ReplyAttention,
+        updated_at_ms: i64,
+        detail: []const u8,
+    };
+
     const PanmuxActionQueueInfo = struct {
         count: u32 = 0,
         first_reference: ?[]const u8 = null,
@@ -1496,6 +1509,102 @@ pub const Window = extern struct {
         priv.panmux_ack_button.as(gtk.Widget).setSensitive(@intFromBool(false));
     }
 
+    fn panmuxReplyAttentionPriority(value: panmux_state.ReplyAttention) u8 {
+        return switch (value) {
+            .unseen => 0,
+            .seen => 1,
+            .none => 2,
+        };
+    }
+
+    fn panmuxReplySelectionWins(
+        candidate: PanmuxWorkspaceReplySelection,
+        current: PanmuxWorkspaceReplySelection,
+    ) bool {
+        const candidate_priority = panmuxReplyAttentionPriority(candidate.session.reply_attention);
+        const current_priority = panmuxReplyAttentionPriority(current.session.reply_attention);
+        if (candidate_priority != current_priority) return candidate_priority < current_priority;
+        if (candidate.session.updated_at_ms != current.session.updated_at_ms) {
+            return candidate.session.updated_at_ms > current.session.updated_at_ms;
+        }
+
+        const candidate_attention_ms = if (candidate.attention) |attention| attention.created_at_ms else std.math.minInt(i64);
+        const current_attention_ms = if (current.attention) |attention| attention.created_at_ms else std.math.minInt(i64);
+        if (candidate_attention_ms != current_attention_ms) return candidate_attention_ms > current_attention_ms;
+
+        return std.mem.order(u8, candidate.session.session_id, current.session.session_id) == .lt;
+    }
+
+    fn panmuxBestReplySelectionForWorkspace(
+        store: *const panmux_state.Store,
+        workspace_id: []const u8,
+    ) ?PanmuxWorkspaceReplySelection {
+        var best: ?PanmuxWorkspaceReplySelection = null;
+        for (store.sessions()) |*session| {
+            if (!std.mem.eql(u8, session.workspace_id, workspace_id)) continue;
+            if (session.agent_type != .codex) continue;
+            if (!panmux_state.isReplyRelevant(session)) continue;
+            if (session.reply_attention == .none) continue;
+
+            const candidate: PanmuxWorkspaceReplySelection = .{
+                .session = session,
+                .attention = store.latestAttentionForSession(session.session_id),
+            };
+            if (best == null or panmuxReplySelectionWins(candidate, best.?)) {
+                best = candidate;
+            }
+        }
+
+        return best;
+    }
+
+    fn panmuxReplyDetail(selection: PanmuxWorkspaceReplySelection) []const u8 {
+        if (selection.attention) |attention| {
+            if (attention.body) |body| {
+                const detail = panmuxInlineSummary(body);
+                if (detail.len > 0) return detail;
+            }
+
+            const title = panmuxInlineSummary(attention.title);
+            if (title.len > 0 and !std.mem.eql(u8, title, "Codex")) return title;
+        }
+
+        if (selection.session.last_summary) |summary| {
+            const detail = panmuxInlineSummary(summary);
+            if (detail.len > 0) return detail;
+        }
+
+        if (selection.session.status_text) |status_text| {
+            const detail = panmuxInlineSummary(status_text);
+            if (detail.len > 0 and !std.mem.eql(u8, detail, "running")) return detail;
+        }
+
+        return "Reply waiting";
+    }
+
+    fn panmuxWindowQueueEntryForWorkspace(
+        store: *const panmux_state.Store,
+        workspace_id: []const u8,
+        tab_position: c_int,
+    ) ?PanmuxWindowQueueEntry {
+        const selection = panmuxBestReplySelectionForWorkspace(store, workspace_id) orelse return null;
+        return .{
+            .workspace_id = selection.session.workspace_id,
+            .tab_position = tab_position,
+            .reply_attention = selection.session.reply_attention,
+            .updated_at_ms = selection.session.updated_at_ms,
+            .detail = panmuxReplyDetail(selection),
+        };
+    }
+
+    fn panmuxWindowQueueEntryLessThan(_: void, a: PanmuxWindowQueueEntry, b: PanmuxWindowQueueEntry) bool {
+        const a_priority = panmuxReplyAttentionPriority(a.reply_attention);
+        const b_priority = panmuxReplyAttentionPriority(b.reply_attention);
+        if (a_priority != b_priority) return a_priority < b_priority;
+        if (a.updated_at_ms != b.updated_at_ms) return a.updated_at_ms > b.updated_at_ms;
+        return a.tab_position < b.tab_position;
+    }
+
     fn populatePanmuxActionQueueStrings(
         self: *Self,
         source: *gtk.StringList,
@@ -1504,22 +1613,31 @@ pub const Window = extern struct {
         self.clearStringList(source);
 
         var info: PanmuxActionQueueInfo = .{};
+        const alloc = Application.default().allocator();
+        var entries: std.ArrayListUnmanaged(PanmuxWindowQueueEntry) = .empty;
+        defer entries.deinit(alloc);
+
         const n_pages = self.private().tab_view.getNPages();
         var i: c_int = 0;
         while (i < n_pages) : (i += 1) {
             const page = self.private().tab_view.getNthPage(i);
             var tab_buf: [32]u8 = undefined;
             const workspace_id = panmuxWorkspaceIdForPage(page, &tab_buf) orelse continue;
-            const detail = self.panmuxNeedsInputDetailForWorkspace(workspace_id) orelse continue;
+            const entry = panmuxWindowQueueEntryForWorkspace(self.panmuxStore(), workspace_id, i) orelse continue;
+            entries.append(alloc, entry) catch break;
+        }
 
+        std.mem.sortUnstable(PanmuxWindowQueueEntry, entries.items, {}, panmuxWindowQueueEntryLessThan);
+
+        for (entries.items) |entry| {
             var reference_buf: [64]u8 = undefined;
             var buf: [512]u8 = undefined;
             const line = std.fmt.bufPrintZ(
                 &buf,
                 "{s} | {s}",
                 .{
-                    self.panmuxWorkspaceReference(i, workspace_id, &reference_buf),
-                    detail,
+                    self.panmuxWorkspaceReference(entry.tab_position, entry.workspace_id, &reference_buf),
+                    entry.detail,
                 },
             ) catch continue;
             source.append(line);
@@ -1527,7 +1645,7 @@ pub const Window = extern struct {
                 info.first_reference = std.fmt.bufPrint(
                     first_reference_buf,
                     "{s}",
-                    .{self.panmuxWorkspaceReference(i, workspace_id, &reference_buf)},
+                    .{self.panmuxWorkspaceReference(entry.tab_position, entry.workspace_id, &reference_buf)},
                 ) catch null;
             }
             info.count += 1;
@@ -1536,36 +1654,9 @@ pub const Window = extern struct {
         return info;
     }
 
-    fn panmuxLatestUnreadAttentionForWorkspace(
-        self: *Self,
-        workspace_id: []const u8,
-    ) ?*const panmux_state.AttentionItem {
-        var latest: ?*const panmux_state.AttentionItem = null;
-        for (self.panmuxStore().sessions()) |session| {
-            if (!std.mem.eql(u8, session.workspace_id, workspace_id)) continue;
-            if (session.agent_type != .codex) continue;
-            if (!panmux_state.isReplyRelevant(&session)) continue;
-            if (session.reply_attention == .none) continue;
-
-            const attention = self.panmuxStore().latestAttentionForSession(session.session_id) orelse continue;
-            if (latest == null or attention.created_at_ms > latest.?.created_at_ms) {
-                latest = attention;
-            }
-        }
-
-        return latest;
-    }
-
     fn panmuxNeedsInputDetailForWorkspace(self: *Self, workspace_id: []const u8) ?[]const u8 {
-        const attention = self.panmuxLatestUnreadAttentionForWorkspace(workspace_id) orelse return null;
-        if (attention.body) |body| {
-            const detail = panmuxInlineSummary(body);
-            if (detail.len > 0) return detail;
-        }
-
-        const title = panmuxInlineSummary(attention.title);
-        if (title.len > 0 and !std.mem.eql(u8, title, "Codex")) return title;
-        return "Reply waiting";
+        const selection = panmuxBestReplySelectionForWorkspace(self.panmuxStore(), workspace_id) orelse return null;
+        return panmuxReplyDetail(selection);
     }
 
     fn panmuxWorkspaceReference(
@@ -3485,4 +3576,102 @@ test "panmux attention is only for state-less notifications" {
     try std.testing.expect(!Window.panmuxShouldMarkNeedsAttention("running"));
     try std.testing.expect(!Window.panmuxShouldMarkNeedsAttention("info"));
     try std.testing.expect(!Window.panmuxShouldMarkNeedsAttention("warning"));
+}
+
+test "panmux detail selector prefers unseen replies over newer seen ones" {
+    var store = panmux_state.Store.init(std.testing.allocator);
+    defer store.deinit();
+
+    _ = try store.recordReplyCompletion(.{
+        .workspace_id = "tab-a",
+        .tab_id = "tab-a",
+        .surface_id = "surface-a",
+        .session_id = "session-unseen",
+        .agent_type = .codex,
+        .agent_label = "Codex",
+        .phase = .waiting_user,
+        .severity = .info,
+        .reply_attention = .unseen,
+        .draft_started = false,
+        .turn_id = "turn-unseen",
+        .summary = "older unseen body",
+    }, .{
+        .workspace_id = "tab-a",
+        .session_id = "session-unseen",
+        .kind = .turn_complete,
+        .severity = .info,
+        .title = "Codex",
+        .body = "older unseen body",
+        .ack_required = true,
+        .logical_key = "session-unseen:turn-unseen",
+    });
+
+    _ = try store.recordReplyCompletion(.{
+        .workspace_id = "tab-a",
+        .tab_id = "tab-a",
+        .surface_id = "surface-b",
+        .session_id = "session-seen",
+        .agent_type = .codex,
+        .agent_label = "Codex",
+        .phase = .waiting_user,
+        .severity = .info,
+        .reply_attention = .unseen,
+        .draft_started = false,
+        .turn_id = "turn-seen",
+        .summary = "newer seen body",
+    }, .{
+        .workspace_id = "tab-a",
+        .session_id = "session-seen",
+        .kind = .turn_complete,
+        .severity = .info,
+        .title = "Codex",
+        .body = "newer seen body",
+        .ack_required = true,
+        .logical_key = "session-seen:turn-seen",
+    });
+
+    try std.testing.expect(store.markSessionViewed("tab-a", "session-seen", null));
+    for (store.session_items.items) |*session| {
+        if (std.mem.eql(u8, session.session_id, "session-unseen")) {
+            session.updated_at_ms = 100;
+        } else if (std.mem.eql(u8, session.session_id, "session-seen")) {
+            session.updated_at_ms = 200;
+        }
+    }
+
+    const selection = Window.panmuxBestReplySelectionForWorkspace(&store, "tab-a").?;
+    try std.testing.expectEqualStrings("session-unseen", selection.session.session_id);
+    try std.testing.expectEqual(panmux_state.ReplyAttention.unseen, selection.session.reply_attention);
+    try std.testing.expectEqualStrings("older unseen body", Window.panmuxReplyDetail(selection));
+}
+
+test "panmux window queue sorts unseen before seen and by recency" {
+    var entries = [_]Window.PanmuxWindowQueueEntry{
+        .{
+            .workspace_id = "tab-seen",
+            .tab_position = 0,
+            .reply_attention = .seen,
+            .updated_at_ms = 300,
+            .detail = "seen detail",
+        },
+        .{
+            .workspace_id = "tab-unseen-old",
+            .tab_position = 1,
+            .reply_attention = .unseen,
+            .updated_at_ms = 100,
+            .detail = "old unseen",
+        },
+        .{
+            .workspace_id = "tab-unseen-new",
+            .tab_position = 2,
+            .reply_attention = .unseen,
+            .updated_at_ms = 200,
+            .detail = "new unseen",
+        },
+    };
+
+    std.mem.sortUnstable(Window.PanmuxWindowQueueEntry, entries[0..], {}, Window.panmuxWindowQueueEntryLessThan);
+    try std.testing.expectEqualStrings("tab-unseen-new", entries[0].workspace_id);
+    try std.testing.expectEqualStrings("tab-unseen-old", entries[1].workspace_id);
+    try std.testing.expectEqualStrings("tab-seen", entries[2].workspace_id);
 }
