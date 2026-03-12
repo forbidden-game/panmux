@@ -733,6 +733,11 @@ pub const Store = struct {
         return best_idx;
     }
 
+    pub fn boundSessionIdForSurface(self: *const Store, workspace_id: []const u8, surface_id: []const u8) ?[]const u8 {
+        const idx = self.findBoundSessionIndex(workspace_id, surface_id) orelse return null;
+        return self.session_items.items[idx].session_id;
+    }
+
     fn resolveBoundSessionIndex(
         self: *const Store,
         workspace_id: []const u8,
@@ -746,10 +751,7 @@ pub const Store = struct {
         }
 
         if (surface_id) |value| return self.findBoundSessionIndex(workspace_id, value);
-
-        const workspace_idx = self.findWorkspaceIndex(workspace_id) orelse return null;
-        const selected_surface_id = self.workspace_items.items[workspace_idx].selected_surface_id orelse return null;
-        return self.findBoundSessionIndex(workspace_id, selected_surface_id);
+        return null;
     }
 
     fn stableWorkspaceId(self: *const Store, workspace_id: []const u8) ?[]const u8 {
@@ -1579,6 +1581,53 @@ test "partial session updates preserve existing surface binding" {
     try std.testing.expectEqualStrings("surface-a", store.sessions()[0].surface_id.?);
 }
 
+test "session updates without surface do not adopt legacy placeholder binding" {
+    var store = Store.init(std.testing.allocator);
+    defer store.deinit();
+
+    try store.updateSession(.{
+        .workspace_id = "tab-a",
+        .tab_id = "tab-a",
+        .surface_id = "surface-a",
+        .session_id = "legacy:surface-a",
+        .agent_type = .codex,
+        .agent_label = "Codex",
+        .phase = .running,
+        .severity = .none,
+        .summary = "legacy placeholder",
+    });
+
+    try store.updateSession(.{
+        .workspace_id = "tab-a",
+        .tab_id = "tab-a",
+        .surface_id = null,
+        .session_id = "session-a",
+        .agent_type = .codex,
+        .agent_label = "Codex",
+        .phase = .running,
+        .severity = .none,
+        .summary = "session update",
+    });
+
+    try std.testing.expectEqual(@as(usize, 2), store.sessions().len);
+
+    var saw_legacy = false;
+    var saw_session = false;
+    for (store.sessions()) |session| {
+        if (std.mem.eql(u8, session.session_id, "legacy:surface-a")) {
+            saw_legacy = true;
+            try std.testing.expectEqualStrings("surface-a", session.surface_id.?);
+        }
+        if (std.mem.eql(u8, session.session_id, "session-a")) {
+            saw_session = true;
+            try std.testing.expectEqual(@as(?[]const u8, null), session.surface_id);
+        }
+    }
+
+    try std.testing.expect(saw_legacy);
+    try std.testing.expect(saw_session);
+}
+
 test "failed codex replies remain visible through seen state" {
     var store = Store.init(std.testing.allocator);
     defer store.deinit();
@@ -1631,7 +1680,7 @@ test "failed codex replies remain visible through seen state" {
     }
 }
 
-test "selected surface binding only views the focused split" {
+test "missing identity does not fall back through selected surface binding" {
     var store = Store.init(std.testing.allocator);
     defer store.deinit();
 
@@ -1684,12 +1733,68 @@ test "selected surface binding only views the focused split" {
     });
 
     try store.setSelectedSurface("tab-a", "tab-a", "surface-a");
-    try std.testing.expect(store.markSessionViewed("tab-a", null, null));
+    try std.testing.expect(!store.markSessionViewed("tab-a", null, null));
+    try std.testing.expectEqual(ReplyAttention.unseen, store.session_items.items[0].reply_attention);
+    try std.testing.expectEqual(ReplyAttention.unseen, store.session_items.items[1].reply_attention);
+}
+
+test "explicit surface binding only views the targeted split" {
+    var store = Store.init(std.testing.allocator);
+    defer store.deinit();
+
+    _ = try store.recordReplyCompletion(.{
+        .workspace_id = "tab-a",
+        .tab_id = "tab-a",
+        .surface_id = "surface-a",
+        .session_id = "session-a",
+        .agent_type = .codex,
+        .agent_label = "Codex",
+        .phase = .waiting_user,
+        .severity = .info,
+        .reply_attention = .unseen,
+        .draft_started = false,
+        .turn_id = "turn-a",
+        .summary = "reply on a",
+    }, .{
+        .workspace_id = "tab-a",
+        .session_id = "session-a",
+        .kind = .turn_complete,
+        .severity = .info,
+        .title = "Codex",
+        .body = "reply on a",
+        .ack_required = true,
+        .logical_key = "session-a:turn-a",
+    });
+
+    _ = try store.recordReplyCompletion(.{
+        .workspace_id = "tab-a",
+        .tab_id = "tab-a",
+        .surface_id = "surface-b",
+        .session_id = "session-b",
+        .agent_type = .codex,
+        .agent_label = "Codex",
+        .phase = .waiting_user,
+        .severity = .info,
+        .reply_attention = .unseen,
+        .draft_started = false,
+        .turn_id = "turn-b",
+        .summary = "reply on b",
+    }, .{
+        .workspace_id = "tab-a",
+        .session_id = "session-b",
+        .kind = .turn_complete,
+        .severity = .info,
+        .title = "Codex",
+        .body = "reply on b",
+        .ack_required = true,
+        .logical_key = "session-b:turn-b",
+    });
+
+    try std.testing.expect(store.markSessionViewed("tab-a", null, "surface-a"));
     try std.testing.expectEqual(ReplyAttention.seen, store.session_items.items[0].reply_attention);
     try std.testing.expectEqual(ReplyAttention.unseen, store.session_items.items[1].reply_attention);
 
-    try store.setSelectedSurface("tab-a", "tab-a", "surface-b");
-    try std.testing.expect(store.markSessionViewed("tab-a", null, null));
+    try std.testing.expect(store.markSessionViewed("tab-a", null, "surface-b"));
     try std.testing.expectEqual(ReplyAttention.seen, store.session_items.items[0].reply_attention);
     try std.testing.expectEqual(ReplyAttention.seen, store.session_items.items[1].reply_attention);
 }
