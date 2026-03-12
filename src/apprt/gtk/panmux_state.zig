@@ -413,7 +413,7 @@ pub const Store = struct {
         session.reply_attention = .none;
         session.draft_started = false;
         session.updated_at_ms = nowMs();
-        _ = self.ackSessionAttention(session.session_id);
+        self.removeAttentionForSession(session.session_id);
         return true;
     }
 
@@ -441,7 +441,7 @@ pub const Store = struct {
                 }
             }
 
-            _ = self.ackSessionAttention(session.session_id);
+            self.removeAttentionForSession(session.session_id);
             var removed = self.session_items.swapRemove(i);
             removed.deinit(self.alloc);
         }
@@ -456,7 +456,7 @@ pub const Store = struct {
             if (!std.mem.eql(u8, session_surface_id, surface_id)) continue;
             if (!std.mem.startsWith(u8, session.session_id, "legacy:")) continue;
 
-            _ = self.ackSessionAttention(session.session_id);
+            self.removeAttentionForSession(session.session_id);
             if (session.last_summary == null and session.status_text == null) {
                 var removed = self.session_items.swapRemove(i);
                 removed.deinit(self.alloc);
@@ -549,6 +549,23 @@ pub const Store = struct {
         }
 
         return count;
+    }
+
+    fn removeAttentionForSession(self: *Store, session_id: []const u8) void {
+        var i: usize = 0;
+        while (i < self.attention_items.items.len) {
+            const attention_session_id = self.attention_items.items[i].session_id orelse {
+                i += 1;
+                continue;
+            };
+            if (!std.mem.eql(u8, attention_session_id, session_id)) {
+                i += 1;
+                continue;
+            }
+
+            var removed = self.attention_items.swapRemove(i);
+            removed.deinit(self.alloc);
+        }
     }
 
     pub fn snapshotWorkspace(self: *const Store, workspace_id: []const u8) ?WorkspaceSnapshot {
@@ -1289,6 +1306,78 @@ test "clear status with session id ignores mismatched surface id" {
     try std.testing.expectEqual(@as(usize, 0), store.sessions().len);
 }
 
+test "submit reply removes codex attention instead of acking it" {
+    var store = Store.init(std.testing.allocator);
+    defer store.deinit();
+
+    _ = try store.recordReplyCompletion(.{
+        .workspace_id = "tab-a",
+        .tab_id = "tab-a",
+        .surface_id = "surface-a",
+        .session_id = "session-a",
+        .agent_type = .codex,
+        .agent_label = "Codex",
+        .phase = .waiting_user,
+        .severity = .info,
+        .reply_attention = .unseen,
+        .draft_started = false,
+        .turn_id = "turn-a",
+        .summary = "reply waiting",
+    }, .{
+        .workspace_id = "tab-a",
+        .session_id = "session-a",
+        .kind = .turn_complete,
+        .severity = .info,
+        .title = "Codex",
+        .body = "reply waiting",
+        .ack_required = true,
+        .logical_key = "session-a:turn-a",
+    });
+
+    try std.testing.expectEqual(@as(usize, 1), store.attentions().len);
+    try std.testing.expect(store.markSessionViewed("tab-a", "session-a", null));
+    try std.testing.expect(store.markReplyDraftStarted("tab-a", "session-a", null));
+    try std.testing.expect(store.submitReply("tab-a", "session-a", "surface-a"));
+
+    try std.testing.expectEqual(@as(usize, 0), store.attentions().len);
+    try std.testing.expectEqual(SessionPhase.running, store.sessions()[0].phase);
+    try std.testing.expectEqual(ReplyAttention.none, store.sessions()[0].reply_attention);
+}
+
+test "clear status removes codex attention instead of leaking legacy overlay" {
+    var store = Store.init(std.testing.allocator);
+    defer store.deinit();
+
+    _ = try store.recordReplyCompletion(.{
+        .workspace_id = "tab-a",
+        .tab_id = "tab-a",
+        .surface_id = "surface-a",
+        .session_id = "session-a",
+        .agent_type = .codex,
+        .agent_label = "Codex",
+        .phase = .failed,
+        .severity = .@"error",
+        .reply_attention = .unseen,
+        .draft_started = false,
+        .summary = "request failed",
+    }, .{
+        .workspace_id = "tab-a",
+        .session_id = "session-a",
+        .kind = .session_failed,
+        .severity = .@"error",
+        .title = "Codex",
+        .body = "request failed",
+        .ack_required = true,
+        .logical_key = "session-a",
+    });
+
+    store.clearStatus("tab-a", "session-a", null);
+
+    try std.testing.expectEqual(@as(usize, 0), store.sessions().len);
+    try std.testing.expectEqual(@as(usize, 0), store.attentions().len);
+    try std.testing.expectEqual(@as(?WorkspaceSnapshot, null), store.snapshotWorkspace("tab-a"));
+}
+
 test "completed codex sessions do not keep a visible workspace badge" {
     var store = Store.init(std.testing.allocator);
     defer store.deinit();
@@ -1559,6 +1648,7 @@ test "submit reply ignores enter from the wrong split" {
     try std.testing.expectEqual(SessionPhase.running, store.session_items.items[0].phase);
     try std.testing.expectEqual(ReplyAttention.none, store.session_items.items[0].reply_attention);
     try std.testing.expect(!store.session_items.items[0].draft_started);
+    try std.testing.expectEqual(@as(usize, 0), store.attentions().len);
 }
 
 test "logical reply refresh updates one attention item per session and turn" {
