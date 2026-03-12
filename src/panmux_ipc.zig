@@ -32,6 +32,8 @@ pub const TabInfo = struct {
     loading: bool,
     running_count: u32 = 0,
     unread_count: u32 = 0,
+    unseen_count: u32 = 0,
+    seen_count: u32 = 0,
 };
 
 pub const SessionInfo = struct {
@@ -41,6 +43,8 @@ pub const SessionInfo = struct {
     agent_label: []const u8,
     phase: []const u8,
     severity: []const u8,
+    reply_attention: []const u8,
+    draft_started: bool,
     surface_id: ?[]const u8 = null,
     status_text: ?[]const u8 = null,
     turn_id: ?[]const u8 = null,
@@ -176,6 +180,8 @@ pub const OwnedTabInfo = struct {
     loading: bool,
     running_count: u32 = 0,
     unread_count: u32 = 0,
+    unseen_count: u32 = 0,
+    seen_count: u32 = 0,
 
     pub fn clone(alloc: std.mem.Allocator, info: TabInfo) !OwnedTabInfo {
         var result: OwnedTabInfo = .{
@@ -187,6 +193,8 @@ pub const OwnedTabInfo = struct {
             .loading = info.loading,
             .running_count = info.running_count,
             .unread_count = info.unread_count,
+            .unseen_count = info.unseen_count,
+            .seen_count = info.seen_count,
         };
         errdefer result.deinit(alloc);
 
@@ -214,6 +222,8 @@ pub const OwnedSessionInfo = struct {
     agent_label: [:0]u8,
     phase: [:0]u8,
     severity: [:0]u8,
+    reply_attention: [:0]u8,
+    draft_started: bool,
     surface_id: ?[:0]u8 = null,
     status_text: ?[:0]u8 = null,
     turn_id: ?[:0]u8 = null,
@@ -227,6 +237,7 @@ pub const OwnedSessionInfo = struct {
         alloc.free(self.agent_label);
         alloc.free(self.phase);
         alloc.free(self.severity);
+        alloc.free(self.reply_attention);
         if (self.surface_id) |value| alloc.free(value);
         if (self.status_text) |value| alloc.free(value);
         if (self.turn_id) |value| alloc.free(value);

@@ -1018,6 +1018,8 @@ pub const Window = extern struct {
             .loading = if (snapshot) |value| value.badge_kind == .running else false,
             .running_count = if (snapshot) |value| value.running_count else 0,
             .unread_count = if (snapshot) |value| value.unread_count else 0,
+            .unseen_count = if (snapshot) |value| value.unseen_count else 0,
+            .seen_count = if (snapshot) |value| value.seen_count else 0,
         };
         errdefer info.deinit(alloc);
         return info;
@@ -1326,17 +1328,21 @@ pub const Window = extern struct {
         };
     }
 
-    fn sidebarStatusKind(self: *Self, page: ?*adw.TabPage) []const u8 {
-        const snapshot = self.panmuxWorkspaceSnapshotForPage(page orelse return "empty") orelse return "empty";
-        return switch (snapshot.badge_kind) {
-            .empty => "empty",
-            .running => "running",
-            .unseen => "unseen",
-            .seen => "seen",
-            .info => "info",
-            .warning => "warning",
-            .@"error" => "error",
-            .other => "other",
+    const SidebarReplySnapshot = struct {
+        badge_kind: panmux_state.BadgeKind = .empty,
+        overlay_kind: panmux_state.OverlayKind = .none,
+        unseen_count: u32 = 0,
+        badge_label: ?[]const u8 = null,
+    };
+
+    fn sidebarReplySnapshot(self: *Self, page: ?*adw.TabPage) SidebarReplySnapshot {
+        const workspace_page = page orelse return .{};
+        const snapshot = self.panmuxWorkspaceSnapshotForPage(workspace_page) orelse return .{};
+        return .{
+            .badge_kind = snapshot.badge_kind,
+            .overlay_kind = snapshot.overlay_kind,
+            .unseen_count = snapshot.unseen_count,
+            .badge_label = snapshot.badge_label,
         };
     }
 
@@ -1350,13 +1356,12 @@ pub const Window = extern struct {
         };
     }
 
-    fn sidebarOverlayKind(self: *Self, page: ?*adw.TabPage) []const u8 {
-        const snapshot = self.panmuxWorkspaceSnapshotForPage(page orelse return "") orelse return "";
-        return sidebarOverlayKindForOverlay(snapshot.overlay_kind);
+    fn sidebarBadgeIs(self: *Self, page: ?*adw.TabPage, expected: panmux_state.BadgeKind) bool {
+        return self.sidebarReplySnapshot(page).badge_kind == expected;
     }
 
-    fn sidebarStatusIs(self: *Self, page: ?*adw.TabPage, expected: []const u8) bool {
-        return std.mem.eql(u8, sidebarStatusKind(self, page), expected);
+    fn sidebarOverlayIs(self: *Self, page: ?*adw.TabPage, expected: panmux_state.OverlayKind) bool {
+        return self.sidebarReplySnapshot(page).overlay_kind == expected;
     }
 
     fn panmuxStore(self: *Self) *panmux_state.Store {
@@ -1859,6 +1864,8 @@ pub const Window = extern struct {
             .agent_label = try alloc.dupeZ(u8, session.agent_label),
             .phase = try alloc.dupeZ(u8, panmux_state.phaseText(session.phase)),
             .severity = try alloc.dupeZ(u8, panmux_state.severityText(session.severity)),
+            .reply_attention = try alloc.dupeZ(u8, panmux_state.replyAttentionText(session.reply_attention)),
+            .draft_started = session.draft_started,
             .surface_id = if (session.surface_id) |value| try alloc.dupeZ(u8, value) else null,
             .status_text = if (session.status_text) |value| try alloc.dupeZ(u8, value) else null,
             .turn_id = if (session.turn_id) |value| try alloc.dupeZ(u8, value) else null,
@@ -2492,8 +2499,7 @@ pub const Window = extern struct {
         self: *Self,
         page: ?*adw.TabPage,
     ) callconv(.c) [*:0]const u8 {
-        const snapshot = self.panmuxWorkspaceSnapshotForPage(page orelse return glib.ext.dupeZ(u8, "State")) orelse
-            return glib.ext.dupeZ(u8, "State");
+        const snapshot = self.sidebarReplySnapshot(page);
         return glib.ext.dupeZ(u8, snapshot.badge_label orelse "State");
     }
 
@@ -2501,12 +2507,11 @@ pub const Window = extern struct {
         self: *Self,
         page: ?*adw.TabPage,
     ) callconv(.c) [*:0]const u8 {
-        const snapshot = self.panmuxWorkspaceSnapshotForPage(page orelse return glib.ext.dupeZ(u8, "")) orelse
-            return glib.ext.dupeZ(u8, "");
-        if (snapshot.unread_count == 0) return glib.ext.dupeZ(u8, "");
+        const snapshot = self.sidebarReplySnapshot(page);
+        if (snapshot.unseen_count == 0) return glib.ext.dupeZ(u8, "");
 
         var buf: [16]u8 = undefined;
-        const label = std.fmt.bufPrintZ(&buf, "{}", .{snapshot.unread_count}) catch
+        const label = std.fmt.bufPrintZ(&buf, "{}", .{snapshot.unseen_count}) catch
             return glib.ext.dupeZ(u8, "");
         return glib.ext.dupeZ(u8, label);
     }
@@ -2515,71 +2520,70 @@ pub const Window = extern struct {
         self: *Self,
         page: ?*adw.TabPage,
     ) callconv(.c) c_int {
-        const snapshot = self.panmuxWorkspaceSnapshotForPage(page orelse return 0) orelse return 0;
-        return @intFromBool(snapshot.unread_count > 0);
+        return @intFromBool(self.sidebarReplySnapshot(page).unseen_count > 0);
     }
 
     fn closureSidebarStatusIsRunning(
         self: *Self,
         page: ?*adw.TabPage,
     ) callconv(.c) c_int {
-        return @intFromBool(sidebarStatusIs(self, page, "running"));
+        return @intFromBool(self.sidebarBadgeIs(page, .running));
     }
 
     fn closureSidebarStatusIsUnseen(
         self: *Self,
         page: ?*adw.TabPage,
     ) callconv(.c) c_int {
-        return @intFromBool(sidebarStatusIs(self, page, "unseen"));
+        return @intFromBool(self.sidebarBadgeIs(page, .unseen));
     }
 
     fn closureSidebarStatusIsSeen(
         self: *Self,
         page: ?*adw.TabPage,
     ) callconv(.c) c_int {
-        return @intFromBool(sidebarStatusIs(self, page, "seen"));
+        return @intFromBool(self.sidebarBadgeIs(page, .seen));
     }
 
     fn closureSidebarStatusIsWarning(
         self: *Self,
         page: ?*adw.TabPage,
     ) callconv(.c) c_int {
-        return @intFromBool(sidebarStatusIs(self, page, "warning"));
+        return @intFromBool(self.sidebarBadgeIs(page, .warning));
     }
 
     fn closureSidebarStatusIsError(
         self: *Self,
         page: ?*adw.TabPage,
     ) callconv(.c) c_int {
-        return @intFromBool(sidebarStatusIs(self, page, "error"));
+        return @intFromBool(self.sidebarBadgeIs(page, .@"error"));
     }
 
     fn closureSidebarStatusIsOther(
         self: *Self,
         page: ?*adw.TabPage,
     ) callconv(.c) c_int {
-        return @intFromBool(sidebarStatusIs(self, page, "other"));
+        return @intFromBool(self.sidebarBadgeIs(page, .other));
     }
 
     fn closureSidebarOverlayIsInfo(
         self: *Self,
         page: ?*adw.TabPage,
     ) callconv(.c) c_int {
-        return @intFromBool(std.mem.eql(u8, self.sidebarOverlayKind(page), "info"));
+        return @intFromBool(self.sidebarOverlayIs(page, .info));
     }
 
     fn closureSidebarOverlayIsWarning(
         self: *Self,
         page: ?*adw.TabPage,
     ) callconv(.c) c_int {
-        return @intFromBool(std.mem.eql(u8, self.sidebarOverlayKind(page), "warning"));
+        return @intFromBool(self.sidebarOverlayIs(page, .warning));
     }
 
     fn closureSidebarOverlayIsError(
         self: *Self,
         page: ?*adw.TabPage,
     ) callconv(.c) c_int {
-        return @intFromBool(std.mem.eql(u8, self.sidebarOverlayKind(page), "error"));
+        return @intFromBool(self.sidebarOverlayIs(page, .@"error"));
     }
 
     fn panmuxAckAllAttention(_: *gtk.Button, self: *Self) callconv(.c) void {
