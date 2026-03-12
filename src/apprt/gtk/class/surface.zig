@@ -1206,7 +1206,7 @@ pub const Surface = extern struct {
         _ = exit_code;
 
         const window = ext.getAncestor(Window, self.as(gtk.Widget)) orelse return;
-        _ = window.panmuxFinishRunningSurface(self);
+        _ = window.panmuxFinishLegacySurfaceSession(self);
     }
 
     fn emitPanmuxReplyInput(self: *Self, kind: PanmuxReplyInputKind) void {
