@@ -1947,8 +1947,15 @@ fn getActiveWindow() ?*Window {
     return null;
 }
 
-fn getPanmuxWindow(params: panmux_ipc.Params) ?*Window {
-    if (!panmux_ipc.hasExplicitTarget(params)) {
+fn panmuxRequestUsesSessionTarget(method: []const u8, params: panmux_ipc.Params) bool {
+    if (params.session_id == null or params.surface_id != null) return false;
+    return std.mem.eql(u8, method, "notify") or
+        std.mem.eql(u8, method, "set-status") or
+        std.mem.eql(u8, method, "clear-status");
+}
+
+fn getPanmuxWindow(method: []const u8, params: panmux_ipc.Params) ?*Window {
+    if (!panmuxRequestUsesSessionTarget(method, params) and !panmux_ipc.hasExplicitTarget(params)) {
         return getActiveWindow();
     }
 
@@ -2017,7 +2024,7 @@ fn panmuxIdleRequest(ud: ?*anyopaque) callconv(.c) c_int {
 }
 
 fn handlePanmuxRequest(_: *Application, request: panmux_ipc.Request) panmux_ipc.OwnedResponse {
-    const window = getPanmuxWindow(request.params) orelse {
+    const window = getPanmuxWindow(request.method, request.params) orelse {
         log.warn("panmux request target not found method={s}", .{request.method});
         return panmux_ipc.OwnedResponse.failure(std.heap.c_allocator, "target_not_found") catch panmux_ipc.OwnedResponse{ .ok = false };
     };
@@ -3122,4 +3129,15 @@ fn findActiveWindow(data: ?*const anyopaque, _: ?*const anyopaque) callconv(.c) 
     // but we want to return 0 to indicate equality.
     // Abusing integers to be enums and booleans is a terrible idea, C.
     return if (window.isActive() != 0) 0 else -1;
+}
+
+test "panmux session target routing is method scoped" {
+    try std.testing.expect(panmuxRequestUsesSessionTarget("notify", .{ .session_id = "session-a" }));
+    try std.testing.expect(panmuxRequestUsesSessionTarget("set-status", .{ .session_id = "session-a" }));
+    try std.testing.expect(panmuxRequestUsesSessionTarget("clear-status", .{ .session_id = "session-a" }));
+    try std.testing.expect(!panmuxRequestUsesSessionTarget("list-tabs", .{ .session_id = "session-a" }));
+    try std.testing.expect(!panmuxRequestUsesSessionTarget("notify", .{
+        .session_id = "session-a",
+        .surface_id = "surface-a",
+    }));
 }

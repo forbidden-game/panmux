@@ -936,6 +936,12 @@ pub const Window = extern struct {
     fn resolvePanmuxPage(self: *Self, params: panmux_ipc.Params) ?*adw.TabPage {
         const priv = self.private();
 
+        switch (panmuxSessionTargetStrategy(self.panmuxStore(), params)) {
+            .session => return self.resolvePanmuxSessionPage(params),
+            .no_target => return null,
+            .explicit_fallback, .none => {},
+        }
+
         if (params.tab_index) |tab_index| {
             if (tab_index == 0) return null;
             const idx: c_int = @intCast(tab_index - 1);
@@ -958,6 +964,33 @@ pub const Window = extern struct {
         }
 
         return priv.tab_view.getSelectedPage();
+    }
+
+    fn panmuxSessionTargetStrategy(
+        store: *const panmux_state.Store,
+        params: panmux_ipc.Params,
+    ) PanmuxSessionTargetStrategy {
+        if (params.session_id == null) return .none;
+        if (params.surface_id != null) return .none;
+        if (panmuxWorkspaceIdForSession(store, params.session_id.?) != null) return .session;
+        if (params.tab_index != null or params.tab_id != null) return .explicit_fallback;
+        return .no_target;
+    }
+
+    fn resolvePanmuxSessionPage(self: *Self, params: panmux_ipc.Params) ?*adw.TabPage {
+        const session_id = params.session_id orelse return null;
+        const workspace_id = panmuxWorkspaceIdForSession(self.panmuxStore(), session_id) orelse return null;
+        const page = self.panmuxPageForWorkspaceId(workspace_id) orelse return null;
+
+        if (params.tab_index) |tab_index| {
+            if (tab_index == 0) return null;
+            const idx: c_int = @intCast(tab_index - 1);
+            if (idx < 0 or idx >= self.private().tab_view.getNPages()) return null;
+            if (self.private().tab_view.getNthPage(idx) != page) return null;
+        }
+
+        if (params.tab_id != null and !pageMatchesPanmuxTarget(page, params)) return null;
+        return page;
     }
 
     fn snapshotPanmuxTab(
@@ -1071,6 +1104,27 @@ pub const Window = extern struct {
         const value = try std.fmt.allocPrint(alloc, "{x}", .{@intFromPtr(ptr)});
         defer alloc.free(value);
         return try alloc.dupeZ(u8, value);
+    }
+
+    fn panmuxWorkspaceIdForSession(store: *const panmux_state.Store, session_id: []const u8) ?[]const u8 {
+        for (store.sessions()) |session| {
+            if (std.mem.eql(u8, session.session_id, session_id)) return session.workspace_id;
+        }
+
+        return null;
+    }
+
+    fn panmuxPageForWorkspaceId(self: *Self, workspace_id: []const u8) ?*adw.TabPage {
+        const n_pages = self.private().tab_view.getNPages();
+        var i: c_int = 0;
+        while (i < n_pages) : (i += 1) {
+            const page = self.private().tab_view.getNthPage(i);
+            var tab_buf: [32]u8 = undefined;
+            const page_workspace_id = panmuxWorkspaceIdForPage(page, &tab_buf) orelse continue;
+            if (std.mem.eql(u8, page_workspace_id, workspace_id)) return page;
+        }
+
+        return null;
     }
 
     fn applyPanmuxStatus(self: *Self, page: *adw.TabPage, params: panmux_ipc.Params) void {
@@ -1378,6 +1432,13 @@ pub const Window = extern struct {
         reply_attention: panmux_state.ReplyAttention,
         updated_at_ms: i64,
         detail: []const u8,
+    };
+
+    const PanmuxSessionTargetStrategy = enum {
+        none,
+        session,
+        explicit_fallback,
+        no_target,
     };
 
     const PanmuxActionQueueInfo = struct {
@@ -3674,4 +3735,124 @@ test "panmux window queue sorts unseen before seen and by recency" {
     try std.testing.expectEqualStrings("tab-unseen-new", entries[0].workspace_id);
     try std.testing.expectEqualStrings("tab-unseen-old", entries[1].workspace_id);
     try std.testing.expectEqualStrings("tab-seen", entries[2].workspace_id);
+}
+
+test "session id only set-status resolves existing workspace identity" {
+    var store = panmux_state.Store.init(std.testing.allocator);
+    defer store.deinit();
+
+    try store.updateSession(.{
+        .workspace_id = "tab-a",
+        .tab_id = "tab-a",
+        .surface_id = "surface-a",
+        .session_id = "session-a",
+        .agent_type = .codex,
+        .agent_label = "Codex",
+        .phase = .running,
+        .severity = .none,
+    });
+
+    const params: panmux_ipc.Params = .{
+        .session_id = "session-a",
+        .state = "running",
+    };
+
+    try std.testing.expectEqualStrings("tab-a", Window.panmuxWorkspaceIdForSession(&store, params.session_id.?).?);
+}
+
+test "session id only notify resolves existing workspace identity" {
+    var store = panmux_state.Store.init(std.testing.allocator);
+    defer store.deinit();
+
+    _ = try store.recordReplyCompletion(.{
+        .workspace_id = "tab-a",
+        .tab_id = "tab-a",
+        .surface_id = "surface-a",
+        .session_id = "session-a",
+        .agent_type = .codex,
+        .agent_label = "Codex",
+        .phase = .waiting_user,
+        .severity = .info,
+        .reply_attention = .unseen,
+        .draft_started = false,
+        .turn_id = "turn-a",
+        .summary = "reply waiting",
+    }, .{
+        .workspace_id = "tab-a",
+        .session_id = "session-a",
+        .kind = .turn_complete,
+        .severity = .info,
+        .title = "Codex",
+        .body = "reply waiting",
+        .ack_required = true,
+        .logical_key = "session-a:turn-a",
+    });
+
+    const params: panmux_ipc.Params = .{
+        .session_id = "session-a",
+        .state = "info",
+        .turn_id = "turn-b",
+    };
+
+    try std.testing.expectEqualStrings("tab-a", Window.panmuxWorkspaceIdForSession(&store, params.session_id.?).?);
+}
+
+test "session id only clear-status resolves by session identity" {
+    var store = panmux_state.Store.init(std.testing.allocator);
+    defer store.deinit();
+
+    try store.updateSession(.{
+        .workspace_id = "tab-a",
+        .tab_id = "tab-a",
+        .surface_id = "surface-a",
+        .session_id = "session-a",
+        .agent_type = .codex,
+        .agent_label = "Codex",
+        .phase = .running,
+        .severity = .none,
+    });
+
+    const params: panmux_ipc.Params = .{
+        .session_id = "session-a",
+    };
+
+    try std.testing.expectEqualStrings("tab-a", Window.panmuxWorkspaceIdForSession(&store, params.session_id.?).?);
+}
+
+test "session target strategy falls back to explicit tab target for new session" {
+    var store = panmux_state.Store.init(std.testing.allocator);
+    defer store.deinit();
+
+    try std.testing.expectEqual(
+        Window.PanmuxSessionTargetStrategy.explicit_fallback,
+        Window.panmuxSessionTargetStrategy(&store, .{
+            .session_id = "session-new",
+            .tab_id = "tab-a",
+        }),
+    );
+    try std.testing.expectEqual(
+        Window.PanmuxSessionTargetStrategy.no_target,
+        Window.panmuxSessionTargetStrategy(&store, .{
+            .session_id = "session-new",
+        }),
+    );
+
+    try store.updateSession(.{
+        .workspace_id = "tab-a",
+        .tab_id = "tab-a",
+        .surface_id = "surface-a",
+        .session_id = "session-a",
+        .agent_type = .codex,
+        .agent_label = "Codex",
+        .phase = .running,
+        .severity = .none,
+    });
+
+    try std.testing.expectEqual(
+        Window.PanmuxSessionTargetStrategy.session,
+        Window.panmuxSessionTargetStrategy(&store, .{
+            .session_id = "session-a",
+            .tab_id = "tab-other",
+        }),
+    );
 }
