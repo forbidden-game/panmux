@@ -814,7 +814,7 @@ pub const Window = extern struct {
 
     pub fn panmuxClearStatus(self: *Self, params: panmux_ipc.Params) bool {
         const page = self.resolvePanmuxPage(params) orelse return false;
-        self.clearPanmuxLegacyStatus(page, params);
+        self.clearPanmuxStatus(page, params);
         return true;
     }
 
@@ -1124,9 +1124,17 @@ pub const Window = extern struct {
         var tab_buf: [32]u8 = undefined;
         var surface_buf: [32]u8 = undefined;
         const workspace_id = panmuxWorkspaceIdForPage(page, &tab_buf) orelse return;
-        const surface_id = panmuxUpdateSurfaceId(page, params, &surface_buf);
+        const explicit_surface = params.surface_id != null;
+        const surface_id = panmuxCompatSurfaceId(page, params, &surface_buf);
         var session_buf: [96]u8 = undefined;
-        const session_id = panmuxSessionId(params, surface_id, &session_buf) orelse return;
+        const session_id = panmuxResolvedSessionId(
+            self.panmuxStore(),
+            workspace_id,
+            params,
+            surface_id,
+            explicit_surface,
+            &session_buf,
+        ) orelse return;
         const status_text = if (state.len > 0 and !std.mem.eql(u8, state, "running")) state else null;
         const summary = params.body orelse params.title;
 
@@ -1153,9 +1161,17 @@ pub const Window = extern struct {
         var tab_buf: [32]u8 = undefined;
         var surface_buf: [32]u8 = undefined;
         const workspace_id = panmuxWorkspaceIdForPage(page, &tab_buf) orelse return;
-        const surface_id = panmuxUpdateSurfaceId(page, params, &surface_buf);
+        const explicit_surface = params.surface_id != null;
+        const surface_id = panmuxCompatSurfaceId(page, params, &surface_buf);
         var session_buf: [96]u8 = undefined;
-        const session_id = panmuxSessionId(params, surface_id, &session_buf);
+        const session_id = panmuxResolvedSessionId(
+            self.panmuxStore(),
+            workspace_id,
+            params,
+            surface_id,
+            explicit_surface,
+            &session_buf,
+        );
         const state = normalizedPanmuxState(params.state);
         const agent_type = panmuxAgentType(params);
         const severity = panmux_state.severityFromState(state);
@@ -1236,19 +1252,18 @@ pub const Window = extern struct {
         self.refreshPanmuxPage(page);
     }
 
-    fn clearPanmuxLegacyStatus(self: *Self, page: *adw.TabPage, params: panmux_ipc.Params) void {
+    fn clearPanmuxStatus(self: *Self, page: *adw.TabPage, params: panmux_ipc.Params) void {
         var tab_buf: [32]u8 = undefined;
         var surface_buf: [32]u8 = undefined;
         const workspace_id = panmuxWorkspaceIdForPage(page, &tab_buf) orelse return;
-        // A session-scoped clear is the real reply-state path. Any surface-only
-        // or zero-arg clear remains legacy compatibility behavior.
-        const legacy_surface_id = if (params.session_id != null)
+        const session_id = panmuxClearSessionId(self.panmuxStore(), workspace_id, params);
+        const legacy_surface_id = if (session_id != null or params.session_id != null)
             params.surface_id
         else
             params.surface_id orelse panmuxSurfaceIdForPage(page, &surface_buf);
         self.panmuxStore().clearStatus(
             workspace_id,
-            params.session_id,
+            session_id,
             legacy_surface_id,
         );
         self.refreshPanmuxPage(page);
@@ -1384,8 +1399,14 @@ pub const Window = extern struct {
         var tab_buf: [32]u8 = undefined;
         var surface_buf: [32]u8 = undefined;
         const workspace_id = panmuxWorkspaceIdForPage(page, &tab_buf) orelse return;
+        const selection = panmuxBestReplySelectionForWorkspace(self.panmuxStore(), workspace_id);
+        const session_id = if (selection) |value| value.session.session_id else null;
         const surface_id = panmuxSurfaceIdForPage(page, &surface_buf);
-        if (!self.panmuxStore().markSessionViewed(workspace_id, null, surface_id)) return;
+        if (!self.panmuxStore().markSessionViewed(
+            workspace_id,
+            session_id,
+            if (session_id == null) surface_id else null,
+        )) return;
         self.refreshPanmuxPage(page);
     }
 
@@ -1397,10 +1418,11 @@ pub const Window = extern struct {
         var surface_buf: [32]u8 = undefined;
         const workspace_id = panmuxWorkspaceIdForPage(page, &tab_buf) orelse return;
         const surface_id = std.fmt.bufPrint(&surface_buf, "{x}", .{@intFromPtr(surface)}) catch return;
+        const session_id = self.panmuxStore().boundSessionIdForSurface(workspace_id, surface_id);
 
         const changed = switch (kind) {
-            .draft_text, .draft_paste => self.panmuxStore().markReplyDraftStarted(workspace_id, null, surface_id),
-            .submit => self.panmuxStore().submitReply(workspace_id, null, surface_id),
+            .draft_text, .draft_paste => self.panmuxStore().markReplyDraftStarted(workspace_id, session_id, surface_id),
+            .submit => self.panmuxStore().submitReply(workspace_id, session_id, surface_id),
         };
         if (!changed) return;
         self.refreshPanmuxPage(page);
@@ -1819,13 +1841,33 @@ pub const Window = extern struct {
         return std.fmt.bufPrint(buf, "{x}", .{@intFromPtr(surface)}) catch null;
     }
 
-    fn panmuxSessionId(params: panmux_ipc.Params, surface_id: ?[]const u8, buf: *[96]u8) ?[]const u8 {
+    fn panmuxResolvedSessionId(
+        store: *const panmux_state.Store,
+        workspace_id: []const u8,
+        params: panmux_ipc.Params,
+        surface_id: ?[]const u8,
+        explicit_surface: bool,
+        buf: *[96]u8,
+    ) ?[]const u8 {
         if (params.session_id) |session_id| return session_id;
         const value = surface_id orelse return null;
+        if (explicit_surface) {
+            if (store.boundSessionIdForSurface(workspace_id, value)) |session_id| return session_id;
+        }
         return std.fmt.bufPrint(buf, "legacy:{s}", .{value}) catch null;
     }
 
-    fn panmuxUpdateSurfaceId(page: *adw.TabPage, params: panmux_ipc.Params, buf: *[32]u8) ?[]const u8 {
+    fn panmuxClearSessionId(
+        store: *const panmux_state.Store,
+        workspace_id: []const u8,
+        params: panmux_ipc.Params,
+    ) ?[]const u8 {
+        if (params.session_id) |session_id| return session_id;
+        const surface_id = params.surface_id orelse return null;
+        return store.boundSessionIdForSurface(workspace_id, surface_id);
+    }
+
+    fn panmuxCompatSurfaceId(page: *adw.TabPage, params: panmux_ipc.Params, buf: *[32]u8) ?[]const u8 {
         if (params.surface_id) |surface_id| return surface_id;
         if (params.session_id != null) return null;
         return panmuxSurfaceIdForPage(page, buf);
@@ -3797,6 +3839,149 @@ test "session id only clear-status resolves by session identity" {
     };
 
     try std.testing.expectEqualStrings("tab-a", Window.panmuxWorkspaceIdForSession(&store, params.session_id.?).?);
+}
+
+test "explicit surface set-status resolves bound session before legacy fallback" {
+    var store = panmux_state.Store.init(std.testing.allocator);
+    defer store.deinit();
+
+    try store.updateSession(.{
+        .workspace_id = "tab-a",
+        .tab_id = "tab-a",
+        .surface_id = "surface-a",
+        .session_id = "session-a",
+        .agent_type = .codex,
+        .agent_label = "Codex",
+        .phase = .running,
+        .severity = .none,
+    });
+
+    var session_buf: [96]u8 = undefined;
+    try std.testing.expectEqualStrings(
+        "session-a",
+        Window.panmuxResolvedSessionId(
+            &store,
+            "tab-a",
+            .{
+                .surface_id = "surface-a",
+                .state = "running",
+            },
+            "surface-a",
+            true,
+            &session_buf,
+        ).?,
+    );
+}
+
+test "explicit surface notify resolves bound session before legacy fallback" {
+    var store = panmux_state.Store.init(std.testing.allocator);
+    defer store.deinit();
+
+    _ = try store.recordReplyCompletion(.{
+        .workspace_id = "tab-a",
+        .tab_id = "tab-a",
+        .surface_id = "surface-a",
+        .session_id = "session-a",
+        .agent_type = .codex,
+        .agent_label = "Codex",
+        .phase = .waiting_user,
+        .severity = .info,
+        .reply_attention = .unseen,
+        .draft_started = false,
+        .turn_id = "turn-a",
+        .summary = "reply waiting",
+    }, .{
+        .workspace_id = "tab-a",
+        .session_id = "session-a",
+        .kind = .turn_complete,
+        .severity = .info,
+        .title = "Codex",
+        .body = "reply waiting",
+        .ack_required = true,
+        .logical_key = "session-a:turn-a",
+    });
+
+    var session_buf: [96]u8 = undefined;
+    try std.testing.expectEqualStrings(
+        "session-a",
+        Window.panmuxResolvedSessionId(
+            &store,
+            "tab-a",
+            .{
+                .surface_id = "surface-a",
+                .state = "info",
+                .turn_id = "turn-b",
+            },
+            "surface-a",
+            true,
+            &session_buf,
+        ).?,
+    );
+}
+
+test "implicit compatibility surface keeps legacy fallback identity" {
+    var store = panmux_state.Store.init(std.testing.allocator);
+    defer store.deinit();
+
+    try store.updateSession(.{
+        .workspace_id = "tab-a",
+        .tab_id = "tab-a",
+        .surface_id = "surface-a",
+        .session_id = "session-a",
+        .agent_type = .codex,
+        .agent_label = "Codex",
+        .phase = .running,
+        .severity = .none,
+    });
+
+    var session_buf: [96]u8 = undefined;
+    try std.testing.expectEqualStrings(
+        "legacy:surface-a",
+        Window.panmuxResolvedSessionId(
+            &store,
+            "tab-a",
+            .{
+                .state = "info",
+            },
+            "surface-a",
+            false,
+            &session_buf,
+        ).?,
+    );
+}
+
+test "explicit surface clear-status resolves bound session identity" {
+    var store = panmux_state.Store.init(std.testing.allocator);
+    defer store.deinit();
+
+    _ = try store.recordReplyCompletion(.{
+        .workspace_id = "tab-a",
+        .tab_id = "tab-a",
+        .surface_id = "surface-a",
+        .session_id = "session-a",
+        .agent_type = .codex,
+        .agent_label = "Codex",
+        .phase = .waiting_user,
+        .severity = .info,
+        .reply_attention = .unseen,
+        .draft_started = false,
+        .turn_id = "turn-a",
+        .summary = "reply waiting",
+    }, .{
+        .workspace_id = "tab-a",
+        .session_id = "session-a",
+        .kind = .turn_complete,
+        .severity = .info,
+        .title = "Codex",
+        .body = "reply waiting",
+        .ack_required = true,
+        .logical_key = "session-a:turn-a",
+    });
+
+    try std.testing.expectEqualStrings(
+        "session-a",
+        Window.panmuxClearSessionId(&store, "tab-a", .{ .surface_id = "surface-a" }).?,
+    );
 }
 
 test "session target strategy falls back to explicit tab target for new session" {
