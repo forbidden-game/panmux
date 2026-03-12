@@ -240,19 +240,6 @@ pub const Store = struct {
         return self.session_items.items[idx].reply_attention != .none;
     }
 
-    pub fn ackSessionAttention(self: *Store, session_id: []const u8) u32 {
-        var count: u32 = 0;
-        for (self.attention_items.items) |*attention| {
-            if (!attention.ack_required or attention.acked_at_ms != null) continue;
-            const attention_session_id = attention.session_id orelse continue;
-            if (!std.mem.eql(u8, attention_session_id, session_id)) continue;
-            attention.acked_at_ms = nowMs();
-            count += 1;
-        }
-
-        return count;
-    }
-
     pub fn ensureWorkspace(self: *Store, workspace_id: []const u8, tab_id: []const u8) !void {
         _ = try self.ensureWorkspaceRecord(workspace_id, tab_id);
     }
@@ -418,6 +405,15 @@ pub const Store = struct {
     }
 
     pub fn clearStatus(self: *Store, workspace_id: []const u8, session_id: ?[]const u8, surface_id: ?[]const u8) void {
+        if (session_id) |value| {
+            self.clearStatusForSession(workspace_id, value);
+            return;
+        }
+
+        self.clearLegacyStatusForSurface(workspace_id, surface_id);
+    }
+
+    fn clearStatusForSession(self: *Store, workspace_id: []const u8, target_session_id: []const u8) void {
         var i: usize = 0;
         while (i < self.session_items.items.len) {
             const session = &self.session_items.items[i];
@@ -425,20 +421,40 @@ pub const Store = struct {
                 i += 1;
                 continue;
             }
-            if (session_id) |value| {
-                if (!std.mem.eql(u8, session.session_id, value)) {
-                    i += 1;
-                    continue;
-                }
-            } else if (surface_id) |value| {
-                const session_surface_id = session.surface_id orelse {
-                    i += 1;
-                    continue;
-                };
-                if (!std.mem.eql(u8, session_surface_id, value)) {
-                    i += 1;
-                    continue;
-                }
+            if (!std.mem.eql(u8, session.session_id, target_session_id)) {
+                i += 1;
+                continue;
+            }
+
+            self.removeAttentionForSession(session.session_id);
+            var removed = self.session_items.swapRemove(i);
+            removed.deinit(self.alloc);
+        }
+    }
+
+    fn clearLegacyStatusForSurface(self: *Store, workspace_id: []const u8, surface_id: ?[]const u8) void {
+        const target_surface_id = surface_id orelse return;
+
+        var i: usize = 0;
+        while (i < self.session_items.items.len) {
+            const session = &self.session_items.items[i];
+            if (!std.mem.eql(u8, session.workspace_id, workspace_id)) {
+                i += 1;
+                continue;
+            }
+
+            const session_surface_id = session.surface_id orelse {
+                i += 1;
+                continue;
+            };
+            if (!std.mem.eql(u8, session_surface_id, target_surface_id)) {
+                i += 1;
+                continue;
+            }
+
+            if (session.agent_type == .codex and !isLegacySessionId(session.session_id)) {
+                i += 1;
+                continue;
             }
 
             self.removeAttentionForSession(session.session_id);
@@ -1306,6 +1322,102 @@ test "clear status with session id ignores mismatched surface id" {
 
     store.clearStatus("tab-a", "session-a", "surface-other");
     try std.testing.expectEqual(@as(usize, 0), store.sessions().len);
+}
+
+test "legacy surface clear preserves real codex reply sessions" {
+    var store = Store.init(std.testing.allocator);
+    defer store.deinit();
+
+    _ = try store.recordReplyCompletion(.{
+        .workspace_id = "tab-a",
+        .tab_id = "tab-a",
+        .surface_id = "surface-a",
+        .session_id = "session-a",
+        .agent_type = .codex,
+        .agent_label = "Codex",
+        .phase = .waiting_user,
+        .severity = .info,
+        .reply_attention = .unseen,
+        .draft_started = false,
+        .turn_id = "turn-a",
+        .summary = "reply waiting",
+    }, .{
+        .workspace_id = "tab-a",
+        .session_id = "session-a",
+        .kind = .turn_complete,
+        .severity = .info,
+        .title = "Codex",
+        .body = "reply waiting",
+        .ack_required = true,
+        .logical_key = "session-a:turn-a",
+    });
+
+    store.clearStatus("tab-a", null, "surface-a");
+
+    try std.testing.expectEqual(@as(usize, 1), store.sessions().len);
+    try std.testing.expectEqualStrings("session-a", store.sessions()[0].session_id);
+    try std.testing.expectEqual(ReplyAttention.unseen, store.sessions()[0].reply_attention);
+    try std.testing.expectEqual(@as(usize, 1), store.attentions().len);
+    try std.testing.expectEqualStrings("session-a", store.attentions()[0].session_id.?);
+}
+
+test "legacy surface clear still removes non-codex status and attention" {
+    var store = Store.init(std.testing.allocator);
+    defer store.deinit();
+
+    _ = try store.recordReplyCompletion(.{
+        .workspace_id = "tab-a",
+        .tab_id = "tab-a",
+        .surface_id = "surface-a",
+        .session_id = "session-a",
+        .agent_type = .codex,
+        .agent_label = "Codex",
+        .phase = .waiting_user,
+        .severity = .info,
+        .reply_attention = .unseen,
+        .draft_started = false,
+        .turn_id = "turn-a",
+        .summary = "reply waiting",
+    }, .{
+        .workspace_id = "tab-a",
+        .session_id = "session-a",
+        .kind = .turn_complete,
+        .severity = .info,
+        .title = "Codex",
+        .body = "reply waiting",
+        .ack_required = true,
+        .logical_key = "session-a:turn-a",
+    });
+
+    try store.updateSession(.{
+        .workspace_id = "tab-a",
+        .tab_id = "tab-a",
+        .surface_id = "surface-a",
+        .session_id = "legacy-shell",
+        .agent_type = .other,
+        .agent_label = "Shell",
+        .phase = .completed,
+        .severity = .info,
+        .status_text = "info",
+        .summary = "legacy status",
+    });
+    _ = try store.raiseAttention(.{
+        .workspace_id = "tab-a",
+        .session_id = "legacy-shell",
+        .kind = .legacy_notify,
+        .severity = .info,
+        .title = "Shell",
+        .body = "legacy status",
+        .ack_required = true,
+        .logical_key = "legacy-shell",
+    });
+
+    store.clearStatus("tab-a", null, "surface-a");
+
+    try std.testing.expectEqual(@as(usize, 1), store.sessions().len);
+    try std.testing.expectEqualStrings("session-a", store.sessions()[0].session_id);
+    try std.testing.expectEqual(@as(usize, 1), store.attentions().len);
+    try std.testing.expectEqualStrings("session-a", store.attentions()[0].session_id.?);
 }
 
 test "submit reply removes codex attention instead of acking it" {

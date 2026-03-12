@@ -272,7 +272,6 @@ pub const Window = extern struct {
         panmux_detail_summary: *gtk.Label,
         panmux_attention_title: *gtk.Label,
         panmux_attention_scroller: *gtk.ScrolledWindow,
-        panmux_ack_button: *gtk.Button,
         panmux_attention_source: *gtk.StringList,
         tab_bar: *adw.TabBar,
         tab_view: *adw.TabView,
@@ -815,7 +814,7 @@ pub const Window = extern struct {
 
     pub fn panmuxClearStatus(self: *Self, params: panmux_ipc.Params) bool {
         const page = self.resolvePanmuxPage(params) orelse return false;
-        self.clearPanmuxStatus(page, params);
+        self.clearPanmuxLegacyStatus(page, params);
         return true;
     }
 
@@ -851,16 +850,7 @@ pub const Window = extern struct {
         return self.panmuxStateForPage(page);
     }
 
-    pub fn panmuxClearStatusSurface(self: *Self, surface: *Surface) bool {
-        const tab = ext.getAncestor(Tab, surface.as(gtk.Widget)) orelse return false;
-        const page = self.private().tab_view.getPage(tab.as(gtk.Widget));
-        var surface_buf: [32]u8 = undefined;
-        const surface_id = std.fmt.bufPrint(&surface_buf, "{x}", .{@intFromPtr(surface)}) catch null;
-        self.clearPanmuxStatus(page, .{ .surface_id = surface_id });
-        return true;
-    }
-
-    pub fn panmuxFinishRunningSurface(self: *Self, surface: *Surface) bool {
+    pub fn panmuxFinishLegacySurfaceSession(self: *Self, surface: *Surface) bool {
         const tab = ext.getAncestor(Tab, surface.as(gtk.Widget)) orelse return false;
         const page = self.private().tab_view.getPage(tab.as(gtk.Widget));
         var tab_buf: [32]u8 = undefined;
@@ -1246,18 +1236,20 @@ pub const Window = extern struct {
         self.refreshPanmuxPage(page);
     }
 
-    fn clearPanmuxStatus(self: *Self, page: *adw.TabPage, params: panmux_ipc.Params) void {
+    fn clearPanmuxLegacyStatus(self: *Self, page: *adw.TabPage, params: panmux_ipc.Params) void {
         var tab_buf: [32]u8 = undefined;
         var surface_buf: [32]u8 = undefined;
         const workspace_id = panmuxWorkspaceIdForPage(page, &tab_buf) orelse return;
-        const resolved_surface_id = if (params.session_id != null)
+        // A session-scoped clear is the real reply-state path. Any surface-only
+        // or zero-arg clear remains legacy compatibility behavior.
+        const legacy_surface_id = if (params.session_id != null)
             params.surface_id
         else
             params.surface_id orelse panmuxSurfaceIdForPage(page, &surface_buf);
         self.panmuxStore().clearStatus(
             workspace_id,
             params.session_id,
-            resolved_surface_id,
+            legacy_surface_id,
         );
         self.refreshPanmuxPage(page);
     }
@@ -1496,7 +1488,6 @@ pub const Window = extern struct {
             self.clearStringList(priv.panmux_attention_source);
             self.setPanmuxInspectorVisible(false);
             self.setPanmuxActionQueueVisible(false);
-            self.setPanmuxAckVisible(false);
             return;
         }
 
@@ -1512,7 +1503,6 @@ pub const Window = extern struct {
             priv.panmux_detail_status.setLabel(status);
             self.clearStringList(priv.panmux_attention_source);
             self.setPanmuxActionQueueVisible(false);
-            self.setPanmuxAckVisible(false);
             return;
         }
 
@@ -1544,7 +1534,6 @@ pub const Window = extern struct {
                 "A tab in this window is waiting for you.";
             priv.panmux_detail_summary.setLabel(summary);
             self.setPanmuxActionQueueVisible(queue.count > 1);
-            self.setPanmuxAckVisible(false);
         }
     }
 
@@ -1566,13 +1555,6 @@ pub const Window = extern struct {
         const priv = self.private();
         priv.panmux_attention_title.as(gtk.Widget).setVisible(@intFromBool(visible));
         priv.panmux_attention_scroller.as(gtk.Widget).setVisible(@intFromBool(visible));
-    }
-
-    fn setPanmuxAckVisible(self: *Self, visible: bool) void {
-        const priv = self.private();
-        _ = visible;
-        priv.panmux_ack_button.as(gtk.Widget).setVisible(@intFromBool(false));
-        priv.panmux_ack_button.as(gtk.Widget).setSensitive(@intFromBool(false));
     }
 
     fn panmuxReplyAttentionPriority(value: panmux_state.ReplyAttention) u8 {
@@ -2586,10 +2568,6 @@ pub const Window = extern struct {
         return @intFromBool(self.sidebarOverlayIs(page, .@"error"));
     }
 
-    fn panmuxAckAllAttention(_: *gtk.Button, self: *Self) callconv(.c) void {
-        _ = self;
-    }
-
     //---------------------------------------------------------------
     // Virtual methods
 
@@ -3549,7 +3527,6 @@ pub const Window = extern struct {
             class.bindTemplateChildPrivate("panmux_detail_summary", .{});
             class.bindTemplateChildPrivate("panmux_attention_title", .{});
             class.bindTemplateChildPrivate("panmux_attention_scroller", .{});
-            class.bindTemplateChildPrivate("panmux_ack_button", .{});
             class.bindTemplateChildPrivate("panmux_attention_source", .{});
             class.bindTemplateChildPrivate("tab_bar", .{});
             class.bindTemplateChildPrivate("tab_view", .{});
@@ -3593,7 +3570,6 @@ pub const Window = extern struct {
             class.bindTemplateCallback("sidebar_overlay_is_info", &closureSidebarOverlayIsInfo);
             class.bindTemplateCallback("sidebar_overlay_is_warning", &closureSidebarOverlayIsWarning);
             class.bindTemplateCallback("sidebar_overlay_is_error", &closureSidebarOverlayIsError);
-            class.bindTemplateCallback("panmux_ack_all_attention", &panmuxAckAllAttention);
             class.bindTemplateCallback("titlebar_style_is_tabs", &closureTitlebarStyleIsTab);
             class.bindTemplateCallback("computed_subtitle", &closureSubtitle);
 
