@@ -304,6 +304,53 @@ pub const OwnedResponse = struct {
     }
 };
 
+test "response json includes reply-state observability fields" {
+    const alloc = std.testing.allocator;
+
+    const tabs = [_]TabInfo{.{
+        .index = 1,
+        .title = "Tab 1",
+        .cwd = "/tmp",
+        .state = "seen",
+        .tab_id = "tab-a",
+        .surface_id = "surface-a",
+        .selected = true,
+        .needs_attention = false,
+        .loading = false,
+        .running_count = 1,
+        .unread_count = 2,
+        .unseen_count = 1,
+        .seen_count = 1,
+    }};
+    const sessions = [_]SessionInfo{.{
+        .workspace_id = "tab-a",
+        .session_id = "session-a",
+        .agent_type = "codex",
+        .agent_label = "Codex",
+        .phase = "waiting_user",
+        .severity = "info",
+        .reply_attention = "seen",
+        .draft_started = true,
+        .surface_id = "surface-a",
+        .status_text = "info",
+        .turn_id = "turn-a",
+        .summary = "reply waiting",
+        .updated_at_ms = 123,
+    }};
+
+    const encoded = try std.fmt.allocPrint(alloc, "{f}", .{std.json.fmt(Response{
+        .ok = true,
+        .tabs = tabs[0..],
+        .sessions = sessions[0..],
+    }, json_opts)});
+    defer alloc.free(encoded);
+
+    try std.testing.expect(std.mem.indexOf(u8, encoded, "\"unseen_count\":1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, encoded, "\"seen_count\":1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, encoded, "\"reply_attention\":\"seen\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, encoded, "\"draft_started\":true") != null);
+}
+
 pub fn hasExplicitTarget(params: Params) bool {
     return params.tab_index != null or params.tab_id != null or params.surface_id != null;
 }

@@ -464,6 +464,8 @@ pub const Store = struct {
             }
 
             session.phase = .exited;
+            session.reply_attention = .none;
+            session.draft_started = false;
             session.updated_at_ms = nowMs();
             return;
         }
@@ -1375,6 +1377,42 @@ test "clear status removes codex attention instead of leaking legacy overlay" {
 
     try std.testing.expectEqual(@as(usize, 0), store.sessions().len);
     try std.testing.expectEqual(@as(usize, 0), store.attentions().len);
+    try std.testing.expectEqual(@as(?WorkspaceSnapshot, null), store.snapshotWorkspace("tab-a"));
+}
+
+test "finishing a legacy surface session removes its codex attention" {
+    var store = Store.init(std.testing.allocator);
+    defer store.deinit();
+
+    _ = try store.recordReplyCompletion(.{
+        .workspace_id = "tab-a",
+        .tab_id = "tab-a",
+        .surface_id = "surface-a",
+        .session_id = "legacy:surface-a",
+        .agent_type = .codex,
+        .agent_label = "Codex",
+        .phase = .waiting_user,
+        .severity = .info,
+        .reply_attention = .unseen,
+        .draft_started = false,
+        .summary = "legacy reply",
+    }, .{
+        .workspace_id = "tab-a",
+        .session_id = "legacy:surface-a",
+        .kind = .turn_complete,
+        .severity = .info,
+        .title = "Codex",
+        .body = "legacy reply",
+        .ack_required = true,
+        .logical_key = "legacy:surface-a",
+    });
+
+    try std.testing.expectEqual(@as(usize, 1), store.attentions().len);
+
+    store.finishLegacySurfaceSession("tab-a", "surface-a");
+
+    try std.testing.expectEqual(@as(usize, 0), store.attentions().len);
+    try std.testing.expectEqual(SessionPhase.exited, store.sessions()[0].phase);
     try std.testing.expectEqual(@as(?WorkspaceSnapshot, null), store.snapshotWorkspace("tab-a"));
 }
 
