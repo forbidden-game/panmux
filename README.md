@@ -96,6 +96,11 @@ This installs to `~/.local/opt/panmux/` and creates:
 - `~/.local/bin/panmuxctl` — Control CLI
 - `~/.local/share/applications/panmux.desktop` — Desktop launcher
 
+The installer also snapshots your current Ghostty font-related settings into a
+private panmux config at `~/.local/opt/panmux/current/etc/xdg/ghostty/config.ghostty`,
+so panmux can keep a known-good font profile instead of inheriting your global
+Ghostty config directly.
+
 ### Basic Usage
 
 ```bash
@@ -105,7 +110,7 @@ panmux
 # In any tab, control the current session
 panmuxctl notify --title "Build" --body "Complete" --state done
 panmuxctl set-status --state running --title "Testing"
-panmuxctl clear-status
+panmuxctl clear-status --session-id "$PANMUX_SESSION_ID"
 
 # Switch tabs
 panmuxctl focus-tab --tab 2

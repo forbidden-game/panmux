@@ -22,6 +22,12 @@ pub const Severity = enum {
     @"error",
 };
 
+pub const ReplyAttention = enum {
+    none,
+    unseen,
+    seen,
+};
+
 pub const AttentionKind = enum {
     turn_complete,
     needs_review,
@@ -33,6 +39,8 @@ pub const AttentionKind = enum {
 pub const BadgeKind = enum {
     empty,
     running,
+    unseen,
+    seen,
     info,
     warning,
     @"error",
@@ -75,9 +83,12 @@ pub const AgentSessionState = struct {
     agent_label: []u8,
     phase: SessionPhase,
     severity: Severity,
+    reply_attention: ReplyAttention = .none,
+    draft_started: bool = false,
     status_text: ?[]u8 = null,
     turn_id: ?[]u8 = null,
     last_summary: ?[]u8 = null,
+    last_attention_id: ?[]u8 = null,
     started_at_ms: i64,
     updated_at_ms: i64,
 
@@ -90,12 +101,14 @@ pub const AgentSessionState = struct {
         if (self.status_text) |value| alloc.free(value);
         if (self.turn_id) |value| alloc.free(value);
         if (self.last_summary) |value| alloc.free(value);
+        if (self.last_attention_id) |value| alloc.free(value);
         self.* = undefined;
     }
 };
 
 pub const AttentionItem = struct {
     attention_id: []u8,
+    logical_key: ?[]u8 = null,
     workspace_id: []u8,
     session_id: ?[]u8 = null,
     kind: AttentionKind,
@@ -108,6 +121,7 @@ pub const AttentionItem = struct {
 
     fn deinit(self: *AttentionItem, alloc: std.mem.Allocator) void {
         alloc.free(self.attention_id);
+        if (self.logical_key) |value| alloc.free(value);
         alloc.free(self.workspace_id);
         alloc.free(self.title);
         if (self.session_id) |value| alloc.free(value);
@@ -120,6 +134,8 @@ pub const WorkspaceSnapshot = struct {
     workspace_id: []const u8,
     running_count: u32 = 0,
     unread_count: u32 = 0,
+    unseen_count: u32 = 0,
+    seen_count: u32 = 0,
     badge_kind: BadgeKind = .empty,
     badge_label: ?[]const u8 = null,
     overlay_kind: OverlayKind = .none,
@@ -135,6 +151,8 @@ pub const SessionUpdate = struct {
     agent_label: []const u8,
     phase: SessionPhase,
     severity: Severity = .none,
+    reply_attention: ?ReplyAttention = null,
+    draft_started: ?bool = null,
     status_text: ?[]const u8 = null,
     turn_id: ?[]const u8 = null,
     summary: ?[]const u8 = null,
@@ -148,6 +166,7 @@ pub const AttentionUpdate = struct {
     title: []const u8,
     body: ?[]const u8 = null,
     ack_required: bool = true,
+    logical_key: ?[]const u8 = null,
 };
 
 pub const Store = struct {
@@ -198,21 +217,27 @@ pub const Store = struct {
         return latest;
     }
 
-    pub fn sessionNeedsInput(self: *const Store, session_id: []const u8) bool {
-        return self.latestUnreadAttentionForSession(session_id) != null;
-    }
-
-    pub fn ackSessionAttention(self: *Store, session_id: []const u8) u32 {
-        var count: u32 = 0;
+    pub fn latestAttentionForSession(self: *const Store, session_id: []const u8) ?*const AttentionItem {
+        var latest: ?*const AttentionItem = null;
         for (self.attention_items.items) |*attention| {
-            if (!attention.ack_required or attention.acked_at_ms != null) continue;
             const attention_session_id = attention.session_id orelse continue;
             if (!std.mem.eql(u8, attention_session_id, session_id)) continue;
-            attention.acked_at_ms = nowMs();
-            count += 1;
+            if (latest == null or attention.created_at_ms > latest.?.created_at_ms) {
+                latest = attention;
+            }
         }
 
-        return count;
+        return latest;
+    }
+
+    pub fn sessionNeedsInput(self: *const Store, session_id: []const u8) bool {
+        const idx = self.findSessionIndex(session_id) orelse return false;
+        return self.session_items.items[idx].reply_attention == .unseen;
+    }
+
+    pub fn sessionHasReplyAttention(self: *const Store, session_id: []const u8) bool {
+        const idx = self.findSessionIndex(session_id) orelse return false;
+        return self.session_items.items[idx].reply_attention != .none;
     }
 
     pub fn ensureWorkspace(self: *Store, workspace_id: []const u8, tab_id: []const u8) !void {
@@ -261,19 +286,14 @@ pub const Store = struct {
         const workspace = try self.ensureWorkspaceRecord(update.workspace_id, update.tab_id);
         workspace.last_event_at_ms = nowMs();
 
-        // For Codex, a fresh running update means the user has resumed the
-        // conversation, so any prior "needs input" marker for this session
-        // should be consumed immediately.
-        if (update.agent_type == .codex and update.phase == .running) {
-            _ = self.ackSessionAttention(update.session_id);
-        }
-
         const idx = try self.resolveSessionIndex(update);
         const session = &self.session_items.items[idx];
 
         try replaceOwned(self.alloc, &session.workspace_id, update.workspace_id);
         try replaceOwned(self.alloc, &session.tab_id, update.tab_id);
-        try replaceOptionalOwned(self.alloc, &session.surface_id, update.surface_id);
+        if (update.surface_id != null) {
+            try replaceOptionalOwned(self.alloc, &session.surface_id, update.surface_id);
+        }
         try replaceOwned(self.alloc, &session.agent_label, update.agent_label);
         try replaceOptionalOwned(self.alloc, &session.status_text, update.status_text);
         try replaceOptionalOwned(self.alloc, &session.turn_id, update.turn_id);
@@ -281,6 +301,16 @@ pub const Store = struct {
         session.agent_type = update.agent_type;
         session.phase = update.phase;
         session.severity = update.severity;
+        if (update.reply_attention) |value| {
+            session.reply_attention = value;
+        } else if (update.agent_type == .codex and isProcessRunning(update.phase)) {
+            session.reply_attention = .none;
+        }
+        if (update.draft_started) |value| {
+            session.draft_started = value;
+        } else if (update.agent_type == .codex and isProcessRunning(update.phase)) {
+            session.draft_started = false;
+        }
         if (session.started_at_ms == 0) session.started_at_ms = nowMs();
         session.updated_at_ms = nowMs();
     }
@@ -288,14 +318,102 @@ pub const Store = struct {
     pub fn touchSession(self: *Store, update: SessionUpdate) !void {
         const idx = self.findSessionIndex(update.session_id) orelse return;
         const session = &self.session_items.items[idx];
+        if (update.surface_id != null) {
+            try replaceOptionalOwned(self.alloc, &session.surface_id, update.surface_id);
+        }
         try replaceOptionalOwned(self.alloc, &session.turn_id, update.turn_id);
         try replaceOptionalOwned(self.alloc, &session.last_summary, update.summary);
         try replaceOptionalOwned(self.alloc, &session.status_text, update.status_text);
         if (update.severity != .none) session.severity = update.severity;
+        if (update.reply_attention) |value| session.reply_attention = value;
+        if (update.draft_started) |value| session.draft_started = value;
         session.updated_at_ms = nowMs();
     }
 
+    pub fn recordReplyCompletion(
+        self: *Store,
+        update: SessionUpdate,
+        attention: AttentionUpdate,
+    ) ![]const u8 {
+        std.debug.assert(update.agent_type == .codex);
+        std.debug.assert(update.reply_attention != null);
+
+        try self.updateSession(update);
+        const attention_id = try self.raiseAttention(attention);
+
+        const idx = self.findSessionIndex(update.session_id) orelse return attention_id;
+        const session = &self.session_items.items[idx];
+        try replaceOptionalOwned(self.alloc, &session.last_attention_id, attention_id);
+        return attention_id;
+    }
+
+    pub fn markSessionViewed(
+        self: *Store,
+        workspace_id: []const u8,
+        session_id: ?[]const u8,
+        surface_id: ?[]const u8,
+    ) bool {
+        const idx = self.resolveBoundSessionIndex(workspace_id, session_id, surface_id) orelse return false;
+        const session = &self.session_items.items[idx];
+        if (session.agent_type != .codex) return false;
+        if (session.reply_attention != .unseen) return false;
+        session.reply_attention = .seen;
+        session.updated_at_ms = nowMs();
+        return true;
+    }
+
+    pub fn markReplyDraftStarted(
+        self: *Store,
+        workspace_id: []const u8,
+        session_id: ?[]const u8,
+        surface_id: ?[]const u8,
+    ) bool {
+        const idx = self.resolveBoundSessionIndex(workspace_id, session_id, surface_id) orelse return false;
+        const session = &self.session_items.items[idx];
+        if (session.agent_type != .codex) return false;
+        if (session.reply_attention == .none) return false;
+        if (surface_id) |value| {
+            const bound_surface_id = session.surface_id orelse return false;
+            if (!std.mem.eql(u8, bound_surface_id, value)) return false;
+        }
+        if (session.draft_started) return false;
+        session.draft_started = true;
+        session.updated_at_ms = nowMs();
+        return true;
+    }
+
+    pub fn submitReply(
+        self: *Store,
+        workspace_id: []const u8,
+        session_id: ?[]const u8,
+        surface_id: ?[]const u8,
+    ) bool {
+        const idx = self.resolveBoundSessionIndex(workspace_id, session_id, surface_id) orelse return false;
+        const session = &self.session_items.items[idx];
+        if (session.agent_type != .codex) return false;
+        if (session.reply_attention == .none or !session.draft_started) return false;
+        if (surface_id) |value| {
+            const bound_surface_id = session.surface_id orelse return false;
+            if (!std.mem.eql(u8, bound_surface_id, value)) return false;
+        }
+        session.phase = .running;
+        session.reply_attention = .none;
+        session.draft_started = false;
+        session.updated_at_ms = nowMs();
+        self.removeAttentionForSession(session.session_id);
+        return true;
+    }
+
     pub fn clearStatus(self: *Store, workspace_id: []const u8, session_id: ?[]const u8, surface_id: ?[]const u8) void {
+        if (session_id) |value| {
+            self.clearStatusForSession(workspace_id, value);
+            return;
+        }
+
+        self.clearLegacyStatusForSurface(workspace_id, surface_id);
+    }
+
+    fn clearStatusForSession(self: *Store, workspace_id: []const u8, target_session_id: []const u8) void {
         var i: usize = 0;
         while (i < self.session_items.items.len) {
             const session = &self.session_items.items[i];
@@ -303,24 +421,43 @@ pub const Store = struct {
                 i += 1;
                 continue;
             }
-            if (session_id) |value| {
-                if (!std.mem.eql(u8, session.session_id, value)) {
-                    i += 1;
-                    continue;
-                }
-            }
-            if (surface_id) |value| {
-                const session_surface_id = session.surface_id orelse {
-                    i += 1;
-                    continue;
-                };
-                if (!std.mem.eql(u8, session_surface_id, value)) {
-                    i += 1;
-                    continue;
-                }
+            if (!std.mem.eql(u8, session.session_id, target_session_id)) {
+                i += 1;
+                continue;
             }
 
-            _ = self.ackSessionAttention(session.session_id);
+            self.removeAttentionForSession(session.session_id);
+            var removed = self.session_items.swapRemove(i);
+            removed.deinit(self.alloc);
+        }
+    }
+
+    fn clearLegacyStatusForSurface(self: *Store, workspace_id: []const u8, surface_id: ?[]const u8) void {
+        const target_surface_id = surface_id orelse return;
+
+        var i: usize = 0;
+        while (i < self.session_items.items.len) {
+            const session = &self.session_items.items[i];
+            if (!std.mem.eql(u8, session.workspace_id, workspace_id)) {
+                i += 1;
+                continue;
+            }
+
+            const session_surface_id = session.surface_id orelse {
+                i += 1;
+                continue;
+            };
+            if (!std.mem.eql(u8, session_surface_id, target_surface_id)) {
+                i += 1;
+                continue;
+            }
+
+            if (session.agent_type == .codex and !isLegacySessionId(session.session_id)) {
+                i += 1;
+                continue;
+            }
+
+            self.removeAttentionForSession(session.session_id);
             var removed = self.session_items.swapRemove(i);
             removed.deinit(self.alloc);
         }
@@ -335,7 +472,7 @@ pub const Store = struct {
             if (!std.mem.eql(u8, session_surface_id, surface_id)) continue;
             if (!std.mem.startsWith(u8, session.session_id, "legacy:")) continue;
 
-            _ = self.ackSessionAttention(session.session_id);
+            self.removeAttentionForSession(session.session_id);
             if (session.last_summary == null and session.status_text == null) {
                 var removed = self.session_items.swapRemove(i);
                 removed.deinit(self.alloc);
@@ -343,12 +480,41 @@ pub const Store = struct {
             }
 
             session.phase = .exited;
+            session.reply_attention = .none;
+            session.draft_started = false;
             session.updated_at_ms = nowMs();
             return;
         }
     }
 
     pub fn raiseAttention(self: *Store, update: AttentionUpdate) ![]const u8 {
+        if (update.logical_key) |logical_key| {
+            if (self.findAttentionIndexByLogicalKey(update.workspace_id, logical_key)) |idx| {
+                const attention = &self.attention_items.items[idx];
+                try replaceOwned(self.alloc, &attention.workspace_id, update.workspace_id);
+                try replaceOptionalOwned(self.alloc, &attention.session_id, update.session_id);
+                try replaceOwned(self.alloc, &attention.title, update.title);
+                try replaceOptionalOwned(self.alloc, &attention.body, update.body);
+                attention.kind = update.kind;
+                attention.severity = update.severity;
+                attention.ack_required = update.ack_required;
+                attention.acked_at_ms = null;
+                attention.created_at_ms = nowMs();
+
+                if (update.session_id) |session_id| {
+                    if (self.findSessionIndex(session_id)) |session_idx| {
+                        const session = &self.session_items.items[session_idx];
+                        if (update.body) |body| try replaceOptionalOwned(self.alloc, &session.last_summary, body);
+                        if (update.severity != .none) session.severity = update.severity;
+                        try replaceOptionalOwned(self.alloc, &session.last_attention_id, attention.attention_id);
+                        session.updated_at_ms = nowMs();
+                    }
+                }
+
+                return attention.attention_id;
+            }
+        }
+
         const attention_id = try std.fmt.allocPrint(self.alloc, "attention-{d}", .{self.next_attention_id});
         errdefer self.alloc.free(attention_id);
         self.next_attention_id += 1;
@@ -356,6 +522,7 @@ pub const Store = struct {
         try self.ensureWorkspace(update.workspace_id, update.workspace_id);
         try self.attention_items.append(self.alloc, .{
             .attention_id = attention_id,
+            .logical_key = if (update.logical_key) |value| try self.alloc.dupe(u8, value) else null,
             .workspace_id = try self.alloc.dupe(u8, update.workspace_id),
             .session_id = if (update.session_id) |value| try self.alloc.dupe(u8, value) else null,
             .kind = update.kind,
@@ -372,6 +539,7 @@ pub const Store = struct {
                 const session = &self.session_items.items[idx];
                 if (update.body) |body| try replaceOptionalOwned(self.alloc, &session.last_summary, body);
                 if (update.severity != .none) session.severity = update.severity;
+                try replaceOptionalOwned(self.alloc, &session.last_attention_id, attention_id);
                 session.updated_at_ms = nowMs();
             }
         }
@@ -399,6 +567,23 @@ pub const Store = struct {
         }
 
         return count;
+    }
+
+    fn removeAttentionForSession(self: *Store, session_id: []const u8) void {
+        var i: usize = 0;
+        while (i < self.attention_items.items.len) {
+            const attention_session_id = self.attention_items.items[i].session_id orelse {
+                i += 1;
+                continue;
+            };
+            if (!std.mem.eql(u8, attention_session_id, session_id)) {
+                i += 1;
+                continue;
+            }
+
+            var removed = self.attention_items.swapRemove(i);
+            removed.deinit(self.alloc);
+        }
     }
 
     pub fn snapshotWorkspace(self: *const Store, workspace_id: []const u8) ?WorkspaceSnapshot {
@@ -435,10 +620,10 @@ pub const Store = struct {
         if (update.surface_id) |surface_id| {
             if (self.findActiveSurfaceSessionIndex(update.workspace_id, surface_id, update.agent_type)) |idx| {
                 const session = &self.session_items.items[idx];
-                if (!std.mem.eql(u8, session.session_id, update.session_id)) {
-                    try replaceOwned(self.alloc, &session.session_id, update.session_id);
+                if (isLegacySessionId(session.session_id)) {
+                    try self.rebindSessionIdentity(idx, update.session_id);
+                    return idx;
                 }
-                return idx;
             }
         }
 
@@ -451,13 +636,42 @@ pub const Store = struct {
             .agent_label = try self.alloc.dupe(u8, update.agent_label),
             .phase = update.phase,
             .severity = update.severity,
+            .reply_attention = update.reply_attention orelse .none,
+            .draft_started = update.draft_started orelse false,
             .status_text = if (update.status_text) |value| try self.alloc.dupe(u8, value) else null,
             .turn_id = if (update.turn_id) |value| try self.alloc.dupe(u8, value) else null,
             .last_summary = if (update.summary) |value| try self.alloc.dupe(u8, value) else null,
+            .last_attention_id = null,
             .started_at_ms = nowMs(),
             .updated_at_ms = nowMs(),
         });
         return self.session_items.items.len - 1;
+    }
+
+    fn rebindSessionIdentity(self: *Store, idx: usize, session_id: []const u8) !void {
+        const session = &self.session_items.items[idx];
+        if (std.mem.eql(u8, session.session_id, session_id)) return;
+
+        const old_session_id = session.session_id;
+        for (self.attention_items.items) |*attention| {
+            const belongs_to_old_session = attention.session_id != null and
+                std.mem.eql(u8, attention.session_id.?, old_session_id);
+            if (attention.session_id) |attention_session_id| {
+                if (std.mem.eql(u8, attention_session_id, old_session_id)) {
+                    try replaceOptionalOwned(self.alloc, &attention.session_id, session_id);
+                }
+            }
+
+            if (!belongs_to_old_session) continue;
+            if (attention.logical_key) |logical_key| {
+                const logical_suffix = logicalKeySessionSuffix(logical_key, old_session_id) orelse continue;
+                const rebound_key = try std.fmt.allocPrint(self.alloc, "{s}{s}", .{ session_id, logical_suffix });
+                attention.logical_key = rebound_key;
+                self.alloc.free(logical_key);
+            }
+        }
+
+        try replaceOwned(self.alloc, &session.session_id, session_id);
     }
 
     fn findWorkspaceIndex(self: *const Store, workspace_id: []const u8) ?usize {
@@ -487,10 +701,56 @@ pub const Store = struct {
             const existing_surface_id = session.surface_id orelse continue;
             if (!std.mem.eql(u8, existing_surface_id, surface_id)) continue;
             if (session.agent_type != agent_type) continue;
-            if (!isSessionActive(session.phase)) continue;
+            if (!isReplyRelevant(&session)) continue;
             return idx;
         }
 
+        return null;
+    }
+
+    fn findBoundSessionIndex(self: *const Store, workspace_id: []const u8, surface_id: []const u8) ?usize {
+        var best_idx: ?usize = null;
+        var best_priority: u8 = std.math.maxInt(u8);
+        var best_updated_at: i64 = std.math.minInt(i64);
+
+        for (self.session_items.items, 0..) |session, idx| {
+            if (!std.mem.eql(u8, session.workspace_id, workspace_id)) continue;
+            const existing_surface_id = session.surface_id orelse continue;
+            if (!std.mem.eql(u8, existing_surface_id, surface_id)) continue;
+            if (session.agent_type != .codex) continue;
+            if (!isReplyRelevant(&session)) continue;
+
+            const priority = boundSessionPriority(&session);
+            if (best_idx == null or priority < best_priority or
+                (priority == best_priority and session.updated_at_ms > best_updated_at))
+            {
+                best_idx = idx;
+                best_priority = priority;
+                best_updated_at = session.updated_at_ms;
+            }
+        }
+
+        return best_idx;
+    }
+
+    pub fn boundSessionIdForSurface(self: *const Store, workspace_id: []const u8, surface_id: []const u8) ?[]const u8 {
+        const idx = self.findBoundSessionIndex(workspace_id, surface_id) orelse return null;
+        return self.session_items.items[idx].session_id;
+    }
+
+    fn resolveBoundSessionIndex(
+        self: *const Store,
+        workspace_id: []const u8,
+        session_id: ?[]const u8,
+        surface_id: ?[]const u8,
+    ) ?usize {
+        if (session_id) |value| {
+            const idx = self.findSessionIndex(value) orelse return null;
+            if (!std.mem.eql(u8, self.session_items.items[idx].workspace_id, workspace_id)) return null;
+            return idx;
+        }
+
+        if (surface_id) |value| return self.findBoundSessionIndex(workspace_id, value);
         return null;
     }
 
@@ -508,48 +768,83 @@ pub const Store = struct {
         return null;
     }
 
+    fn findAttentionIndexByLogicalKey(self: *const Store, workspace_id: []const u8, logical_key: []const u8) ?usize {
+        for (self.attention_items.items, 0..) |attention, idx| {
+            if (!std.mem.eql(u8, attention.workspace_id, workspace_id)) continue;
+            const existing_key = attention.logical_key orelse continue;
+            if (std.mem.eql(u8, existing_key, logical_key)) return idx;
+        }
+
+        return null;
+    }
+
     fn snapshotActiveCodexWorkspace(self: *const Store, workspace_id: []const u8) ?WorkspaceSnapshot {
         var snapshot: WorkspaceSnapshot = .{
             .workspace_id = workspace_id,
         };
         var has_active_codex = false;
         var latest_running_session: ?*const AgentSessionState = null;
-        var latest_needs_input_attention: ?*const AttentionItem = null;
+        var latest_unseen_attention: ?*const AttentionItem = null;
+        var latest_seen_attention: ?*const AttentionItem = null;
 
         for (self.session_items.items) |*session| {
             if (!std.mem.eql(u8, session.workspace_id, workspace_id)) continue;
             if (session.agent_type != .codex) continue;
-            if (!isSessionActive(session.phase)) continue;
+            if (!isReplyRelevant(session)) continue;
 
             has_active_codex = true;
-            if (self.latestUnreadAttentionForSession(session.session_id)) |attention| {
-                snapshot.unread_count += 1;
-                if (latest_needs_input_attention == null or attention.created_at_ms > latest_needs_input_attention.?.created_at_ms) {
-                    latest_needs_input_attention = attention;
-                }
-                continue;
+            switch (session.reply_attention) {
+                .unseen => {
+                    snapshot.unread_count += 1;
+                    snapshot.unseen_count += 1;
+                    if (self.latestAttentionForSession(session.session_id)) |attention| {
+                        if (latest_unseen_attention == null or attention.created_at_ms > latest_unseen_attention.?.created_at_ms) {
+                            latest_unseen_attention = attention;
+                        }
+                    }
+                },
+                .seen => {
+                    snapshot.seen_count += 1;
+                    if (self.latestAttentionForSession(session.session_id)) |attention| {
+                        if (latest_seen_attention == null or attention.created_at_ms > latest_seen_attention.?.created_at_ms) {
+                            latest_seen_attention = attention;
+                        }
+                    }
+                },
+                .none => {},
             }
 
-            snapshot.running_count += 1;
-            if (latest_running_session == null or session.updated_at_ms > latest_running_session.?.updated_at_ms) {
-                latest_running_session = session;
+            if (isProcessRunning(session.phase)) {
+                snapshot.running_count += 1;
+                if (latest_running_session == null or session.updated_at_ms > latest_running_session.?.updated_at_ms) {
+                    latest_running_session = session;
+                }
             }
         }
 
         if (!has_active_codex) return null;
 
-        if (snapshot.unread_count > 0) {
-            snapshot.badge_kind = .info;
-            snapshot.overlay_kind = .info;
-            if (latest_needs_input_attention) |attention| {
+        if (snapshot.unseen_count > 0) {
+            snapshot.badge_kind = .unseen;
+            if (latest_unseen_attention) |attention| {
                 snapshot.tooltip = attention.body orelse attention.title;
             }
             return snapshot;
         }
 
-        snapshot.badge_kind = .running;
-        if (latest_running_session) |session| {
-            snapshot.tooltip = session.last_summary orelse session.status_text;
+        if (snapshot.seen_count > 0) {
+            snapshot.badge_kind = .seen;
+            if (latest_seen_attention) |attention| {
+                snapshot.tooltip = attention.body orelse attention.title;
+            }
+            return snapshot;
+        }
+
+        if (snapshot.running_count > 0) {
+            snapshot.badge_kind = .running;
+            if (latest_running_session) |session| {
+                snapshot.tooltip = session.last_summary orelse session.status_text;
+            }
         }
         return snapshot;
     }
@@ -637,6 +932,10 @@ pub fn severityText(value: Severity) []const u8 {
     return @tagName(value);
 }
 
+pub fn replyAttentionText(value: ReplyAttention) []const u8 {
+    return @tagName(value);
+}
+
 pub fn severityFromState(state: []const u8) Severity {
     if (std.mem.eql(u8, state, "info")) return .info;
     if (std.mem.eql(u8, state, "warn") or std.mem.eql(u8, state, "warning")) return .warning;
@@ -681,6 +980,8 @@ fn badgeLabelForSession(session: *const AgentSessionState) ?[]const u8 {
         .other,
         .empty,
         .running,
+        .unseen,
+        .seen,
         .info,
         .warning,
         .@"error",
@@ -708,10 +1009,18 @@ fn severityPriority(severity: Severity) u8 {
     };
 }
 
-pub fn isSessionActive(phase: SessionPhase) bool {
+pub fn isProcessRunning(phase: SessionPhase) bool {
     return switch (phase) {
-        .starting, .running, .waiting_user => true,
-        .completed, .failed, .exited => false,
+        .starting, .running => true,
+        .waiting_user, .completed, .failed, .exited => false,
+    };
+}
+
+pub fn isReplyRelevant(session: *const AgentSessionState) bool {
+    if (session.reply_attention != .none) return true;
+    return switch (session.phase) {
+        .starting, .running, .waiting_user, .failed => true,
+        .completed, .exited => false,
     };
 }
 
@@ -734,6 +1043,25 @@ fn replaceOptionalOwned(alloc: std.mem.Allocator, field: *?[]u8, value: ?[]const
         field.* = null;
     }
     if (value) |next| field.* = try alloc.dupe(u8, next);
+}
+
+fn isLegacySessionId(session_id: []const u8) bool {
+    return std.mem.startsWith(u8, session_id, "legacy:");
+}
+
+fn boundSessionPriority(session: *const AgentSessionState) u8 {
+    return switch (session.reply_attention) {
+        .unseen => 0,
+        .seen => 1,
+        .none => 2,
+    };
+}
+
+fn logicalKeySessionSuffix(logical_key: []const u8, session_id: []const u8) ?[]const u8 {
+    if (!std.mem.startsWith(u8, logical_key, session_id)) return null;
+    if (logical_key.len == session_id.len) return "";
+    if (logical_key[session_id.len] != ':') return null;
+    return logical_key[session_id.len..];
 }
 
 test "store tracks sessions and persistent attention separately" {
@@ -759,21 +1087,54 @@ test "store tracks sessions and persistent attention separately" {
         try std.testing.expectEqual(OverlayKind.none, snapshot.overlay_kind);
     }
 
-    _ = try store.raiseAttention(.{
+    _ = try store.recordReplyCompletion(.{
+        .workspace_id = "tab-a",
+        .tab_id = "tab-a",
+        .surface_id = "surface-a",
+        .session_id = "session-a",
+        .agent_type = .codex,
+        .agent_label = "Codex",
+        .phase = .waiting_user,
+        .severity = .info,
+        .reply_attention = .unseen,
+        .draft_started = false,
+        .turn_id = "turn-a",
+        .summary = "turn complete",
+    }, .{
         .workspace_id = "tab-a",
         .session_id = "session-a",
+        .kind = .turn_complete,
         .severity = .info,
         .title = "Codex",
         .body = "turn complete",
         .ack_required = true,
+        .logical_key = "session-a:turn-a",
     });
 
     {
         const snapshot = store.snapshotWorkspace("tab-a").?;
         try std.testing.expectEqual(@as(u32, 0), snapshot.running_count);
         try std.testing.expectEqual(@as(u32, 1), snapshot.unread_count);
-        try std.testing.expectEqual(BadgeKind.info, snapshot.badge_kind);
-        try std.testing.expectEqual(OverlayKind.info, snapshot.overlay_kind);
+        try std.testing.expectEqual(@as(u32, 1), snapshot.unseen_count);
+        try std.testing.expectEqual(BadgeKind.unseen, snapshot.badge_kind);
+        try std.testing.expectEqual(OverlayKind.none, snapshot.overlay_kind);
+    }
+
+    try std.testing.expect(store.markSessionViewed("tab-a", "session-a", null));
+    {
+        const snapshot = store.snapshotWorkspace("tab-a").?;
+        try std.testing.expectEqual(@as(u32, 0), snapshot.unseen_count);
+        try std.testing.expectEqual(@as(u32, 1), snapshot.seen_count);
+        try std.testing.expectEqual(BadgeKind.seen, snapshot.badge_kind);
+    }
+
+    try std.testing.expect(store.markReplyDraftStarted("tab-a", "session-a", null));
+    try std.testing.expect(store.submitReply("tab-a", "session-a", "surface-a"));
+    {
+        const snapshot = store.snapshotWorkspace("tab-a").?;
+        try std.testing.expectEqual(@as(u32, 1), snapshot.running_count);
+        try std.testing.expectEqual(@as(u32, 0), snapshot.unread_count);
+        try std.testing.expectEqual(BadgeKind.running, snapshot.badge_kind);
     }
 }
 
@@ -807,7 +1168,146 @@ test "explicit session start adopts active legacy session on same surface" {
     try std.testing.expectEqualStrings("session-a", store.sessions()[0].session_id);
 }
 
-test "ack workspace attention clears unread snapshot count" {
+test "legacy adoption migrates attention binding and logical key" {
+    var store = Store.init(std.testing.allocator);
+    defer store.deinit();
+
+    _ = try store.recordReplyCompletion(.{
+        .workspace_id = "tab-a",
+        .tab_id = "tab-a",
+        .surface_id = "surface-a",
+        .session_id = "legacy:surface-a",
+        .agent_type = .codex,
+        .agent_label = "Codex",
+        .phase = .waiting_user,
+        .severity = .info,
+        .reply_attention = .unseen,
+        .draft_started = false,
+        .turn_id = "turn-a",
+        .summary = "legacy reply",
+    }, .{
+        .workspace_id = "tab-a",
+        .session_id = "legacy:surface-a",
+        .kind = .turn_complete,
+        .severity = .info,
+        .title = "Codex",
+        .body = "legacy reply",
+        .ack_required = true,
+        .logical_key = "legacy:surface-a:turn-a",
+    });
+
+    try store.updateSession(.{
+        .workspace_id = "tab-a",
+        .tab_id = "tab-a",
+        .surface_id = "surface-a",
+        .session_id = "session-a",
+        .agent_type = .codex,
+        .agent_label = "Codex",
+        .phase = .running,
+        .severity = .none,
+    });
+
+    try std.testing.expectEqual(@as(usize, 1), store.sessions().len);
+    try std.testing.expectEqualStrings("session-a", store.sessions()[0].session_id);
+    try std.testing.expectEqualStrings("session-a", store.attentions()[0].session_id.?);
+    try std.testing.expectEqualStrings("session-a:turn-a", store.attentions()[0].logical_key.?);
+
+    const attention_id = try store.recordReplyCompletion(.{
+        .workspace_id = "tab-a",
+        .tab_id = "tab-a",
+        .surface_id = "surface-a",
+        .session_id = "session-a",
+        .agent_type = .codex,
+        .agent_label = "Codex",
+        .phase = .waiting_user,
+        .severity = .info,
+        .reply_attention = .unseen,
+        .draft_started = false,
+        .turn_id = "turn-a",
+        .summary = "refreshed reply",
+    }, .{
+        .workspace_id = "tab-a",
+        .session_id = "session-a",
+        .kind = .turn_complete,
+        .severity = .info,
+        .title = "Codex",
+        .body = "refreshed reply",
+        .ack_required = true,
+        .logical_key = "session-a:turn-a",
+    });
+
+    try std.testing.expectEqual(@as(usize, 1), store.attentions().len);
+    try std.testing.expectEqualStrings(attention_id, store.attentions()[0].attention_id);
+    try std.testing.expectEqualStrings("refreshed reply", store.attentions()[0].body.?);
+}
+
+test "explicit session start only adopts legacy placeholder on same surface" {
+    var store = Store.init(std.testing.allocator);
+    defer store.deinit();
+
+    _ = try store.recordReplyCompletion(.{
+        .workspace_id = "tab-a",
+        .tab_id = "tab-a",
+        .surface_id = "surface-a",
+        .session_id = "session-a",
+        .agent_type = .codex,
+        .agent_label = "Codex",
+        .phase = .failed,
+        .severity = .@"error",
+        .reply_attention = .unseen,
+        .draft_started = false,
+        .turn_id = "turn-a",
+        .summary = "request failed",
+    }, .{
+        .workspace_id = "tab-a",
+        .session_id = "session-a",
+        .kind = .session_failed,
+        .severity = .@"error",
+        .title = "Codex",
+        .body = "request failed",
+        .ack_required = true,
+        .logical_key = "session-a:turn-a",
+    });
+
+    try store.updateSession(.{
+        .workspace_id = "tab-a",
+        .tab_id = "tab-a",
+        .surface_id = "surface-a",
+        .session_id = "session-b",
+        .agent_type = .codex,
+        .agent_label = "Codex",
+        .phase = .running,
+        .severity = .none,
+    });
+
+    try std.testing.expectEqual(@as(usize, 2), store.sessions().len);
+
+    var has_session_a = false;
+    var has_session_b = false;
+    for (store.sessions()) |session| {
+        if (std.mem.eql(u8, session.session_id, "session-a")) {
+            has_session_a = true;
+            try std.testing.expectEqual(SessionPhase.failed, session.phase);
+            try std.testing.expectEqual(ReplyAttention.unseen, session.reply_attention);
+        }
+        if (std.mem.eql(u8, session.session_id, "session-b")) {
+            has_session_b = true;
+            try std.testing.expectEqual(SessionPhase.running, session.phase);
+            try std.testing.expectEqual(ReplyAttention.none, session.reply_attention);
+        }
+    }
+
+    try std.testing.expect(has_session_a);
+    try std.testing.expect(has_session_b);
+
+    const snapshot = store.snapshotWorkspace("tab-a").?;
+    try std.testing.expectEqual(BadgeKind.unseen, snapshot.badge_kind);
+    try std.testing.expectEqual(@as(u32, 1), snapshot.unseen_count);
+    try std.testing.expectEqual(@as(u32, 1), snapshot.running_count);
+    try std.testing.expectEqualStrings("session-a", store.attentions()[0].session_id.?);
+}
+
+test "clear status with session id ignores mismatched surface id" {
     var store = Store.init(std.testing.allocator);
     defer store.deinit();
 
@@ -822,19 +1322,212 @@ test "ack workspace attention clears unread snapshot count" {
         .severity = .none,
     });
 
-    _ = try store.raiseAttention(.{
+    store.clearStatus("tab-a", "session-a", "surface-other");
+    try std.testing.expectEqual(@as(usize, 0), store.sessions().len);
+}
+
+test "legacy surface clear preserves real codex reply sessions" {
+    var store = Store.init(std.testing.allocator);
+    defer store.deinit();
+
+    _ = try store.recordReplyCompletion(.{
+        .workspace_id = "tab-a",
+        .tab_id = "tab-a",
+        .surface_id = "surface-a",
+        .session_id = "session-a",
+        .agent_type = .codex,
+        .agent_label = "Codex",
+        .phase = .waiting_user,
+        .severity = .info,
+        .reply_attention = .unseen,
+        .draft_started = false,
+        .turn_id = "turn-a",
+        .summary = "reply waiting",
+    }, .{
         .workspace_id = "tab-a",
         .session_id = "session-a",
+        .kind = .turn_complete,
         .severity = .info,
         .title = "Codex",
-        .body = "turn complete",
+        .body = "reply waiting",
         .ack_required = true,
+        .logical_key = "session-a:turn-a",
     });
 
-    try std.testing.expectEqual(@as(u32, 1), store.snapshotWorkspace("tab-a").?.unread_count);
-    try std.testing.expectEqual(@as(u32, 1), store.ackWorkspaceAttention("tab-a"));
-    try std.testing.expectEqual(@as(u32, 0), store.snapshotWorkspace("tab-a").?.unread_count);
-    try std.testing.expectEqual(BadgeKind.running, store.snapshotWorkspace("tab-a").?.badge_kind);
+    store.clearStatus("tab-a", null, "surface-a");
+
+    try std.testing.expectEqual(@as(usize, 1), store.sessions().len);
+    try std.testing.expectEqualStrings("session-a", store.sessions()[0].session_id);
+    try std.testing.expectEqual(ReplyAttention.unseen, store.sessions()[0].reply_attention);
+    try std.testing.expectEqual(@as(usize, 1), store.attentions().len);
+    try std.testing.expectEqualStrings("session-a", store.attentions()[0].session_id.?);
+}
+
+test "legacy surface clear still removes non-codex status and attention" {
+    var store = Store.init(std.testing.allocator);
+    defer store.deinit();
+
+    _ = try store.recordReplyCompletion(.{
+        .workspace_id = "tab-a",
+        .tab_id = "tab-a",
+        .surface_id = "surface-a",
+        .session_id = "session-a",
+        .agent_type = .codex,
+        .agent_label = "Codex",
+        .phase = .waiting_user,
+        .severity = .info,
+        .reply_attention = .unseen,
+        .draft_started = false,
+        .turn_id = "turn-a",
+        .summary = "reply waiting",
+    }, .{
+        .workspace_id = "tab-a",
+        .session_id = "session-a",
+        .kind = .turn_complete,
+        .severity = .info,
+        .title = "Codex",
+        .body = "reply waiting",
+        .ack_required = true,
+        .logical_key = "session-a:turn-a",
+    });
+
+    try store.updateSession(.{
+        .workspace_id = "tab-a",
+        .tab_id = "tab-a",
+        .surface_id = "surface-a",
+        .session_id = "legacy-shell",
+        .agent_type = .other,
+        .agent_label = "Shell",
+        .phase = .completed,
+        .severity = .info,
+        .status_text = "info",
+        .summary = "legacy status",
+    });
+    _ = try store.raiseAttention(.{
+        .workspace_id = "tab-a",
+        .session_id = "legacy-shell",
+        .kind = .legacy_notify,
+        .severity = .info,
+        .title = "Shell",
+        .body = "legacy status",
+        .ack_required = true,
+        .logical_key = "legacy-shell",
+    });
+
+    store.clearStatus("tab-a", null, "surface-a");
+
+    try std.testing.expectEqual(@as(usize, 1), store.sessions().len);
+    try std.testing.expectEqualStrings("session-a", store.sessions()[0].session_id);
+    try std.testing.expectEqual(@as(usize, 1), store.attentions().len);
+    try std.testing.expectEqualStrings("session-a", store.attentions()[0].session_id.?);
+}
+
+test "submit reply removes codex attention instead of acking it" {
+    var store = Store.init(std.testing.allocator);
+    defer store.deinit();
+
+    _ = try store.recordReplyCompletion(.{
+        .workspace_id = "tab-a",
+        .tab_id = "tab-a",
+        .surface_id = "surface-a",
+        .session_id = "session-a",
+        .agent_type = .codex,
+        .agent_label = "Codex",
+        .phase = .waiting_user,
+        .severity = .info,
+        .reply_attention = .unseen,
+        .draft_started = false,
+        .turn_id = "turn-a",
+        .summary = "reply waiting",
+    }, .{
+        .workspace_id = "tab-a",
+        .session_id = "session-a",
+        .kind = .turn_complete,
+        .severity = .info,
+        .title = "Codex",
+        .body = "reply waiting",
+        .ack_required = true,
+        .logical_key = "session-a:turn-a",
+    });
+
+    try std.testing.expectEqual(@as(usize, 1), store.attentions().len);
+    try std.testing.expect(store.markSessionViewed("tab-a", "session-a", null));
+    try std.testing.expect(store.markReplyDraftStarted("tab-a", "session-a", null));
+    try std.testing.expect(store.submitReply("tab-a", "session-a", "surface-a"));
+
+    try std.testing.expectEqual(@as(usize, 0), store.attentions().len);
+    try std.testing.expectEqual(SessionPhase.running, store.sessions()[0].phase);
+    try std.testing.expectEqual(ReplyAttention.none, store.sessions()[0].reply_attention);
+}
+
+test "clear status removes codex attention instead of leaking legacy overlay" {
+    var store = Store.init(std.testing.allocator);
+    defer store.deinit();
+
+    _ = try store.recordReplyCompletion(.{
+        .workspace_id = "tab-a",
+        .tab_id = "tab-a",
+        .surface_id = "surface-a",
+        .session_id = "session-a",
+        .agent_type = .codex,
+        .agent_label = "Codex",
+        .phase = .failed,
+        .severity = .@"error",
+        .reply_attention = .unseen,
+        .draft_started = false,
+        .summary = "request failed",
+    }, .{
+        .workspace_id = "tab-a",
+        .session_id = "session-a",
+        .kind = .session_failed,
+        .severity = .@"error",
+        .title = "Codex",
+        .body = "request failed",
+        .ack_required = true,
+        .logical_key = "session-a",
+    });
+
+    store.clearStatus("tab-a", "session-a", null);
+
+    try std.testing.expectEqual(@as(usize, 0), store.sessions().len);
+    try std.testing.expectEqual(@as(usize, 0), store.attentions().len);
+    try std.testing.expectEqual(@as(?WorkspaceSnapshot, null), store.snapshotWorkspace("tab-a"));
+}
+
+test "finishing a legacy surface session removes its codex attention" {
+    var store = Store.init(std.testing.allocator);
+    defer store.deinit();
+
+    _ = try store.recordReplyCompletion(.{
+        .workspace_id = "tab-a",
+        .tab_id = "tab-a",
+        .surface_id = "surface-a",
+        .session_id = "legacy:surface-a",
+        .agent_type = .codex,
+        .agent_label = "Codex",
+        .phase = .waiting_user,
+        .severity = .info,
+        .reply_attention = .unseen,
+        .draft_started = false,
+        .summary = "legacy reply",
+    }, .{
+        .workspace_id = "tab-a",
+        .session_id = "legacy:surface-a",
+        .kind = .turn_complete,
+        .severity = .info,
+        .title = "Codex",
+        .body = "legacy reply",
+        .ack_required = true,
+        .logical_key = "legacy:surface-a",
+    });
+
+    try std.testing.expectEqual(@as(usize, 1), store.attentions().len);
+
+    store.finishLegacySurfaceSession("tab-a", "surface-a");
+
+    try std.testing.expectEqual(@as(usize, 0), store.attentions().len);
+    try std.testing.expectEqual(SessionPhase.exited, store.sessions()[0].phase);
+    try std.testing.expectEqual(@as(?WorkspaceSnapshot, null), store.snapshotWorkspace("tab-a"));
 }
 
 test "completed codex sessions do not keep a visible workspace badge" {
@@ -857,7 +1550,7 @@ test "completed codex sessions do not keep a visible workspace badge" {
     try std.testing.expectEqual(@as(?WorkspaceSnapshot, null), store.snapshotWorkspace("tab-a"));
 }
 
-test "codex running update consumes needs input for the session" {
+test "partial session updates preserve existing surface binding" {
     var store = Store.init(std.testing.allocator);
     defer store.deinit();
 
@@ -873,16 +1566,72 @@ test "codex running update consumes needs input for the session" {
         .summary = "session running",
     });
 
-    _ = try store.raiseAttention(.{
+    try store.updateSession(.{
         .workspace_id = "tab-a",
+        .tab_id = "tab-a",
+        .surface_id = null,
         .session_id = "session-a",
-        .severity = .info,
-        .title = "Codex",
-        .body = "need your answer",
-        .ack_required = true,
+        .agent_type = .codex,
+        .agent_label = "Codex",
+        .phase = .running,
+        .severity = .none,
+        .summary = "still running",
     });
 
-    try std.testing.expectEqual(@as(u32, 1), store.snapshotWorkspace("tab-a").?.unread_count);
+    try std.testing.expectEqualStrings("surface-a", store.sessions()[0].surface_id.?);
+}
+
+test "session updates without surface do not adopt legacy placeholder binding" {
+    var store = Store.init(std.testing.allocator);
+    defer store.deinit();
+
+    try store.updateSession(.{
+        .workspace_id = "tab-a",
+        .tab_id = "tab-a",
+        .surface_id = "surface-a",
+        .session_id = "legacy:surface-a",
+        .agent_type = .codex,
+        .agent_label = "Codex",
+        .phase = .running,
+        .severity = .none,
+        .summary = "legacy placeholder",
+    });
+
+    try store.updateSession(.{
+        .workspace_id = "tab-a",
+        .tab_id = "tab-a",
+        .surface_id = null,
+        .session_id = "session-a",
+        .agent_type = .codex,
+        .agent_label = "Codex",
+        .phase = .running,
+        .severity = .none,
+        .summary = "session update",
+    });
+
+    try std.testing.expectEqual(@as(usize, 2), store.sessions().len);
+
+    var saw_legacy = false;
+    var saw_session = false;
+    for (store.sessions()) |session| {
+        if (std.mem.eql(u8, session.session_id, "legacy:surface-a")) {
+            saw_legacy = true;
+            try std.testing.expectEqualStrings("surface-a", session.surface_id.?);
+        }
+        if (std.mem.eql(u8, session.session_id, "session-a")) {
+            saw_session = true;
+            try std.testing.expectEqual(@as(?[]const u8, null), session.surface_id);
+        }
+    }
+
+    try std.testing.expect(saw_legacy);
+    try std.testing.expect(saw_session);
+}
+
+test "failed codex replies remain visible through seen state" {
+    var store = Store.init(std.testing.allocator);
+    defer store.deinit();
+
     try store.updateSession(.{
         .workspace_id = "tab-a",
         .tab_id = "tab-a",
@@ -892,10 +1641,335 @@ test "codex running update consumes needs input for the session" {
         .agent_label = "Codex",
         .phase = .running,
         .severity = .none,
-        .summary = "running again",
     });
 
-    const snapshot = store.snapshotWorkspace("tab-a").?;
-    try std.testing.expectEqual(@as(u32, 0), snapshot.unread_count);
-    try std.testing.expectEqual(BadgeKind.running, snapshot.badge_kind);
+    _ = try store.recordReplyCompletion(.{
+        .workspace_id = "tab-a",
+        .tab_id = "tab-a",
+        .surface_id = "surface-a",
+        .session_id = "session-a",
+        .agent_type = .codex,
+        .agent_label = "Codex",
+        .phase = .failed,
+        .severity = .@"error",
+        .reply_attention = .unseen,
+        .draft_started = false,
+        .summary = "request failed",
+    }, .{
+        .workspace_id = "tab-a",
+        .session_id = "session-a",
+        .kind = .session_failed,
+        .severity = .@"error",
+        .title = "Codex",
+        .body = "request failed",
+        .ack_required = true,
+        .logical_key = "session-a",
+    });
+
+    {
+        const snapshot = store.snapshotWorkspace("tab-a").?;
+        try std.testing.expectEqual(BadgeKind.unseen, snapshot.badge_kind);
+        try std.testing.expectEqual(@as(u32, 1), snapshot.unseen_count);
+    }
+
+    try std.testing.expect(store.markSessionViewed("tab-a", null, "surface-a"));
+    {
+        const snapshot = store.snapshotWorkspace("tab-a").?;
+        try std.testing.expectEqual(BadgeKind.seen, snapshot.badge_kind);
+        try std.testing.expectEqual(@as(u32, 1), snapshot.seen_count);
+    }
+}
+
+test "missing identity does not fall back through selected surface binding" {
+    var store = Store.init(std.testing.allocator);
+    defer store.deinit();
+
+    _ = try store.recordReplyCompletion(.{
+        .workspace_id = "tab-a",
+        .tab_id = "tab-a",
+        .surface_id = "surface-a",
+        .session_id = "session-a",
+        .agent_type = .codex,
+        .agent_label = "Codex",
+        .phase = .waiting_user,
+        .severity = .info,
+        .reply_attention = .unseen,
+        .draft_started = false,
+        .turn_id = "turn-a",
+        .summary = "reply on a",
+    }, .{
+        .workspace_id = "tab-a",
+        .session_id = "session-a",
+        .kind = .turn_complete,
+        .severity = .info,
+        .title = "Codex",
+        .body = "reply on a",
+        .ack_required = true,
+        .logical_key = "session-a:turn-a",
+    });
+
+    _ = try store.recordReplyCompletion(.{
+        .workspace_id = "tab-a",
+        .tab_id = "tab-a",
+        .surface_id = "surface-b",
+        .session_id = "session-b",
+        .agent_type = .codex,
+        .agent_label = "Codex",
+        .phase = .waiting_user,
+        .severity = .info,
+        .reply_attention = .unseen,
+        .draft_started = false,
+        .turn_id = "turn-b",
+        .summary = "reply on b",
+    }, .{
+        .workspace_id = "tab-a",
+        .session_id = "session-b",
+        .kind = .turn_complete,
+        .severity = .info,
+        .title = "Codex",
+        .body = "reply on b",
+        .ack_required = true,
+        .logical_key = "session-b:turn-b",
+    });
+
+    try store.setSelectedSurface("tab-a", "tab-a", "surface-a");
+    try std.testing.expect(!store.markSessionViewed("tab-a", null, null));
+    try std.testing.expectEqual(ReplyAttention.unseen, store.session_items.items[0].reply_attention);
+    try std.testing.expectEqual(ReplyAttention.unseen, store.session_items.items[1].reply_attention);
+}
+
+test "explicit surface binding only views the targeted split" {
+    var store = Store.init(std.testing.allocator);
+    defer store.deinit();
+
+    _ = try store.recordReplyCompletion(.{
+        .workspace_id = "tab-a",
+        .tab_id = "tab-a",
+        .surface_id = "surface-a",
+        .session_id = "session-a",
+        .agent_type = .codex,
+        .agent_label = "Codex",
+        .phase = .waiting_user,
+        .severity = .info,
+        .reply_attention = .unseen,
+        .draft_started = false,
+        .turn_id = "turn-a",
+        .summary = "reply on a",
+    }, .{
+        .workspace_id = "tab-a",
+        .session_id = "session-a",
+        .kind = .turn_complete,
+        .severity = .info,
+        .title = "Codex",
+        .body = "reply on a",
+        .ack_required = true,
+        .logical_key = "session-a:turn-a",
+    });
+
+    _ = try store.recordReplyCompletion(.{
+        .workspace_id = "tab-a",
+        .tab_id = "tab-a",
+        .surface_id = "surface-b",
+        .session_id = "session-b",
+        .agent_type = .codex,
+        .agent_label = "Codex",
+        .phase = .waiting_user,
+        .severity = .info,
+        .reply_attention = .unseen,
+        .draft_started = false,
+        .turn_id = "turn-b",
+        .summary = "reply on b",
+    }, .{
+        .workspace_id = "tab-a",
+        .session_id = "session-b",
+        .kind = .turn_complete,
+        .severity = .info,
+        .title = "Codex",
+        .body = "reply on b",
+        .ack_required = true,
+        .logical_key = "session-b:turn-b",
+    });
+
+    try std.testing.expect(store.markSessionViewed("tab-a", null, "surface-a"));
+    try std.testing.expectEqual(ReplyAttention.seen, store.session_items.items[0].reply_attention);
+    try std.testing.expectEqual(ReplyAttention.unseen, store.session_items.items[1].reply_attention);
+
+    try std.testing.expect(store.markSessionViewed("tab-a", null, "surface-b"));
+    try std.testing.expectEqual(ReplyAttention.seen, store.session_items.items[0].reply_attention);
+    try std.testing.expectEqual(ReplyAttention.seen, store.session_items.items[1].reply_attention);
+}
+
+test "surface-bound reply actions prefer waiting reply over newer running session" {
+    var store = Store.init(std.testing.allocator);
+    defer store.deinit();
+
+    _ = try store.recordReplyCompletion(.{
+        .workspace_id = "tab-a",
+        .tab_id = "tab-a",
+        .surface_id = "surface-a",
+        .session_id = "session-waiting",
+        .agent_type = .codex,
+        .agent_label = "Codex",
+        .phase = .waiting_user,
+        .severity = .info,
+        .reply_attention = .unseen,
+        .draft_started = false,
+        .turn_id = "turn-a",
+        .summary = "waiting reply",
+    }, .{
+        .workspace_id = "tab-a",
+        .session_id = "session-waiting",
+        .kind = .turn_complete,
+        .severity = .info,
+        .title = "Codex",
+        .body = "waiting reply",
+        .ack_required = true,
+        .logical_key = "session-waiting:turn-a",
+    });
+
+    try store.updateSession(.{
+        .workspace_id = "tab-a",
+        .tab_id = "tab-a",
+        .surface_id = "surface-a",
+        .session_id = "session-running",
+        .agent_type = .codex,
+        .agent_label = "Codex",
+        .phase = .running,
+        .severity = .none,
+    });
+
+    for (store.session_items.items) |*session| {
+        if (std.mem.eql(u8, session.session_id, "session-waiting")) {
+            session.updated_at_ms = 100;
+        } else if (std.mem.eql(u8, session.session_id, "session-running")) {
+            session.updated_at_ms = 200;
+        }
+    }
+
+    try std.testing.expect(store.markSessionViewed("tab-a", null, "surface-a"));
+    try std.testing.expect(store.markReplyDraftStarted("tab-a", null, "surface-a"));
+    try std.testing.expect(store.submitReply("tab-a", null, "surface-a"));
+
+    for (store.session_items.items) |session| {
+        if (std.mem.eql(u8, session.session_id, "session-waiting")) {
+            try std.testing.expectEqual(SessionPhase.running, session.phase);
+            try std.testing.expectEqual(ReplyAttention.none, session.reply_attention);
+            try std.testing.expect(!session.draft_started);
+        }
+        if (std.mem.eql(u8, session.session_id, "session-running")) {
+            try std.testing.expectEqual(SessionPhase.running, session.phase);
+            try std.testing.expectEqual(ReplyAttention.none, session.reply_attention);
+        }
+    }
+}
+
+test "submit reply ignores enter from the wrong split" {
+    var store = Store.init(std.testing.allocator);
+    defer store.deinit();
+
+    _ = try store.recordReplyCompletion(.{
+        .workspace_id = "tab-a",
+        .tab_id = "tab-a",
+        .surface_id = "surface-a",
+        .session_id = "session-a",
+        .agent_type = .codex,
+        .agent_label = "Codex",
+        .phase = .waiting_user,
+        .severity = .info,
+        .reply_attention = .unseen,
+        .draft_started = false,
+        .turn_id = "turn-a",
+        .summary = "reply waiting",
+    }, .{
+        .workspace_id = "tab-a",
+        .session_id = "session-a",
+        .kind = .turn_complete,
+        .severity = .info,
+        .title = "Codex",
+        .body = "reply waiting",
+        .ack_required = true,
+        .logical_key = "session-a:turn-a",
+    });
+
+    try std.testing.expect(store.markSessionViewed("tab-a", "session-a", null));
+    try std.testing.expect(store.markReplyDraftStarted("tab-a", null, "surface-a"));
+    try std.testing.expect(!store.submitReply("tab-a", null, "surface-b"));
+
+    try std.testing.expectEqual(SessionPhase.waiting_user, store.session_items.items[0].phase);
+    try std.testing.expectEqual(ReplyAttention.seen, store.session_items.items[0].reply_attention);
+    try std.testing.expect(store.session_items.items[0].draft_started);
+
+    try std.testing.expect(store.submitReply("tab-a", null, "surface-a"));
+    try std.testing.expectEqual(SessionPhase.running, store.session_items.items[0].phase);
+    try std.testing.expectEqual(ReplyAttention.none, store.session_items.items[0].reply_attention);
+    try std.testing.expect(!store.session_items.items[0].draft_started);
+    try std.testing.expectEqual(@as(usize, 0), store.attentions().len);
+}
+
+test "logical reply refresh updates one attention item per session and turn" {
+    var store = Store.init(std.testing.allocator);
+    defer store.deinit();
+
+    try store.updateSession(.{
+        .workspace_id = "tab-a",
+        .tab_id = "tab-a",
+        .surface_id = "surface-a",
+        .session_id = "session-a",
+        .agent_type = .codex,
+        .agent_label = "Codex",
+        .phase = .running,
+        .severity = .none,
+    });
+
+    const first_attention_id = try store.recordReplyCompletion(.{
+        .workspace_id = "tab-a",
+        .tab_id = "tab-a",
+        .surface_id = "surface-a",
+        .session_id = "session-a",
+        .agent_type = .codex,
+        .agent_label = "Codex",
+        .phase = .waiting_user,
+        .severity = .info,
+        .reply_attention = .unseen,
+        .draft_started = false,
+        .turn_id = "turn-a",
+        .summary = "first body",
+    }, .{
+        .workspace_id = "tab-a",
+        .session_id = "session-a",
+        .kind = .turn_complete,
+        .severity = .info,
+        .title = "Codex",
+        .body = "first body",
+        .ack_required = true,
+        .logical_key = "session-a:turn-a",
+    });
+
+    const second_attention_id = try store.recordReplyCompletion(.{
+        .workspace_id = "tab-a",
+        .tab_id = "tab-a",
+        .surface_id = "surface-a",
+        .session_id = "session-a",
+        .agent_type = .codex,
+        .agent_label = "Codex",
+        .phase = .waiting_user,
+        .severity = .info,
+        .reply_attention = .unseen,
+        .draft_started = false,
+        .turn_id = "turn-a",
+        .summary = "refreshed body",
+    }, .{
+        .workspace_id = "tab-a",
+        .session_id = "session-a",
+        .kind = .turn_complete,
+        .severity = .info,
+        .title = "Codex",
+        .body = "refreshed body",
+        .ack_required = true,
+        .logical_key = "session-a:turn-a",
+    });
+
+    try std.testing.expectEqual(@as(usize, 1), store.attentions().len);
+    try std.testing.expectEqualStrings(first_attention_id, second_attention_id);
+    try std.testing.expectEqualStrings("refreshed body", store.attentions()[0].body.?);
 }

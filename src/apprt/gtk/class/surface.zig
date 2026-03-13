@@ -60,6 +60,12 @@ pub const Surface = extern struct {
     /// A SplitTree implementation that stores surfaces.
     pub const Tree = datastruct.SplitTree(Self);
 
+    pub const PanmuxReplyInputKind = enum(c_uint) {
+        draft_text = 0,
+        draft_paste = 1,
+        submit = 2,
+    };
+
     pub const properties = struct {
         /// This property is set to true when the bell is ringing. Note that
         /// this property will only emit a changed signal when there is a
@@ -546,6 +552,17 @@ pub const Surface = extern struct {
                 name,
                 Self,
                 &.{},
+                void,
+            );
+        };
+
+        pub const @"panmux-reply-input" = struct {
+            pub const name = "panmux-reply-input";
+            pub const connect = impl.connect;
+            const impl = gobject.ext.defineSignal(
+                name,
+                Self,
+                &.{c_uint},
                 void,
             );
         };
@@ -1189,27 +1206,53 @@ pub const Surface = extern struct {
         _ = exit_code;
 
         const window = ext.getAncestor(Window, self.as(gtk.Widget)) orelse return;
-        _ = window.panmuxFinishRunningSurface(self);
+        _ = window.panmuxFinishLegacySurfaceSession(self);
     }
 
-    pub fn panmuxInputActivity(self: *Self) void {
-        const window = ext.getAncestor(Window, self.as(gtk.Widget)) orelse return;
-        _ = window.panmuxConsumeNeedsInputSurface(self);
+    fn emitPanmuxReplyInput(self: *Self, kind: PanmuxReplyInputKind) void {
+        signals.@"panmux-reply-input".impl.emit(
+            self,
+            null,
+            .{@intFromEnum(kind)},
+            null,
+        );
     }
 
-    fn maybeConsumePanmuxNeedsInput(
+    fn maybeEmitPanmuxReplyInput(
         self: *Self,
         action: input.Action,
         key: input.Key,
         mods: input.Mods,
+        text: []const u8,
     ) void {
         switch (action) {
             .press, .repeat => {},
             .release => return,
         }
+        if (!mods.shift and !mods.ctrl and !mods.alt and !mods.super and key == .enter) {
+            self.emitPanmuxReplyInput(.submit);
+            return;
+        }
         if (key.modifier()) return;
         if (mods.ctrl or mods.alt or mods.super) return;
-        self.panmuxInputActivity();
+        if (!panmuxLooksLikeReplyDraft(text)) return;
+        self.emitPanmuxReplyInput(.draft_text);
+    }
+
+    fn panmuxLooksLikeReplyDraft(text: []const u8) bool {
+        const trimmed = std.mem.trim(u8, text, " \t\r\n");
+        if (trimmed.len == 0) return false;
+
+        var i: usize = 0;
+        while (i < text.len) {
+            const cp = std.unicode.utf8Decode(text[i..]) catch return false;
+            if ((cp < 0x20 or cp == 0x7F) and cp != '\n' and cp != '\r' and cp != '\t') {
+                return false;
+            }
+            i += std.unicode.utf8CodepointSequenceLength(cp) catch return false;
+        }
+
+        return true;
     }
 
     fn markPanmuxCodexRunning(self: *Self) void {
@@ -1558,8 +1601,6 @@ pub const Surface = extern struct {
             Application.default().winproto(),
         );
 
-        self.maybeConsumePanmuxNeedsInput(action, physical_key, mods);
-
         // Get our consumed modifiers
         const consumed_mods: input.Mods = consumed: {
             const T = @typeInfo(gdk.ModifierType);
@@ -1595,6 +1636,8 @@ pub const Surface = extern struct {
                 } else |_| {}
             }
         }
+
+        self.maybeEmitPanmuxReplyInput(action, physical_key, mods, priv.im_buf[0..priv.im_len]);
 
         // Invoke the core Ghostty logic to handle this input.
         const surface = priv.core_surface orelse return false;
@@ -3425,6 +3468,10 @@ pub const Surface = extern struct {
                 log.warn("error in key callback err={}", .{err});
             };
         }
+
+        if (panmuxLooksLikeReplyDraft(str)) {
+            self.emitPanmuxReplyInput(.draft_text);
+        }
     }
 
     fn glareaRealize(
@@ -4115,7 +4162,9 @@ const Clipboard = struct {
             },
         };
 
-        self.panmuxInputActivity();
+        if (Surface.panmuxLooksLikeReplyDraft(text)) {
+            self.emitPanmuxReplyInput(.draft_paste);
+        }
     }
 
     /// Get the specific type of clipboard for a widget.
